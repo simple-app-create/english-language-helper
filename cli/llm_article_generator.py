@@ -1,47 +1,9 @@
 import click
-import firebase_admin
-from firebase_admin import credentials
-from firebase_admin import firestore
-import os
+from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR
+from firebase_admin import firestore # For firestore.FieldValue and other specific firestore items
+# import datetime # Not strictly needed as we use firestore.FieldValue.server_timestamp()
 
-# Assuming firestore_admin.py handles the main initialization logic
-# We might need to import or reuse parts of that initialization here
-# or structure this as a command under the main cli group.
-# For a standalone skeleton, we'll add basic initialization check.
 
-# Define the name of the environment variable for the key path
-SERVICE_ACCOUNT_KEY_ENV_VAR = 'FIREBASE_SERVICE_ACCOUNT_KEY_PATH'
-
-# Global variable for the Firestore database client
-db = None
-
-def get_firestore_client(key_path=None):
-    """Initializes Firebase Admin SDK and returns Firestore client."""
-    global db
-    if db is not None:
-        return db # Return existing client if already initialized
-
-    # Check if key_path is provided or can be read from env var
-    if key_path is None:
-         key_path = os.environ.get(SERVICE_ACCOUNT_KEY_ENV_VAR)
-
-    if not key_path:
-        click.echo(f"Error: Firebase service account key path is required. Set {SERVICE_ACCOUNT_KEY_ENV_VAR} env var or pass --key-path.")
-        return None # Indicate failure
-
-    try:
-        cred = credentials.Certificate(key_path)
-        if not firebase_admin._apps:
-             firebase_admin.initialize_app(cred)
-        else:
-            firebase_admin.get_app() # Use default app if already initialized
-
-        db = firestore.client()
-        # click.echo("Firebase Admin SDK initialized successfully.") # Optional
-        return db
-    except Exception as e:
-        click.echo(f"Error initializing Firebase: {e}")
-        return None # Indicate failure
 
 
 @click.command()
@@ -58,68 +20,137 @@ def get_firestore_client(key_path=None):
     help='The topic for the article to be generated.'
 )
 @click.option(
-    '--level',
-    type=click.IntRange(1, 18),
+    '--level-order',
+    type=click.IntRange(min=1), # min=1, no explicit max for flexibility
     required=True,
-    help='The target reading level (1-18) for the generated article.'
+    help='The target reading level order (e.g., 1, 2, 3) to map to a levelId from the "levels" collection.'
 )
-# Add more options as needed for LLM parameters (e.g., word count, style, model)
-def generate_article(key_path, topic, level):
+# Future LLM options:
+# @click.option('--word-count', type=int, default=500, help='Approximate word count for the article.')
+# @click.option('--style', type=click.Choice(['formal', 'informal', 'academic']), default='formal', help='Writing style.')
+def generate_article(key_path, topic, level_order):
     """
-    Generates a new article using an LLM based on topic and level,
-    and adds it to the 'articles' collection in Firestore.
+    Generates a new article (using placeholders for LLM interaction) based on topic
+    and level order, and adds it to the 'articles' collection in Firestore.
     """
-    # 1. Initialize Firestore client
     firestore_db = get_firestore_client(key_path)
     if firestore_db is None:
-        exit(1) # Exit if Firestore initialization failed
+        click.echo("Failed to initialize Firestore client. Aborting.", err=True)
+        # Consider using click.Context.exit(1) if within a click context managed elsewhere
+        # For a simple script, exit(1) is fine.
+        exit(1) 
 
-    click.echo(f"Generating article on topic '{topic}' for level {level}...")
+    # 1. Fetch levelId from 'levels' collection based on level_order
+    level_id = None
+    level_name_english = "Unknown Level" # Default
+    try:
+        levels_query = firestore_db.collection('levels').where('order', '==', level_order).limit(1)
+        levels_docs = list(levels_query.stream()) # Execute the query and get results
+
+        if not levels_docs:
+            click.echo(f"Error: No level found in 'levels' collection with order = {level_order}. Please ensure a level with this order exists.", err=True)
+            exit(1)
+        
+        level_doc = levels_docs[0] # Get the first document
+        level_id = level_doc.id
+        level_name_english = level_doc.get('nameEnglish', level_name_english) # Get name if exists
+        click.echo(f"Using levelId: '{level_id}' (Name: '{level_name_english}') for order {level_order}.")
+
+    except Exception as e:
+        click.echo(f"Error querying 'levels' collection: {e}", err=True)
+        exit(1)
+
+    click.echo(f"Generating article on topic '{topic}' for level order {level_order} (levelId: {level_id})...")
 
     # --- Placeholder for LLM Interaction ---
-    # 2. Call LLM API with topic and level constraints
-    #    - This is where you would integrate with OpenAI, Google AI, etc.
-    #    - You'll need to handle API keys, prompt engineering, etc.
-    generated_title = f"Generated Article: {topic}" # Replace with actual LLM output
-    generated_content = "This is placeholder content generated by the LLM skeleton.\n\nDetails: Topic - {topic}, Level - {level}".format(topic=topic, level=level) # Replace with actual LLM output
-    generated_tags = [] # Replace with actual LLM output or derived tags
+    # 2. Call LLM API with topic, level_id (or level_name_english for prompt), word_count, style etc.
+    #    This is where you would integrate with an actual LLM service.
+    #    The LLM should ideally generate: title, content, and relevant tags.
+    
+    # Simulate LLM output
+    click.echo("Simulating LLM content generation...")
+    generated_title = f"Exploring {topic}: An Article for {level_name_english} Learners"
+    generated_content = (
+        f"This is a placeholder article about '{topic}'. It has been 'generated' by a script "
+        f"and is intended for learners at the {level_name_english} level (order: {level_order}, levelId: {level_id}).\n\n"
+        f"**Introduction to {topic}**\n"
+        f"Start with a captivating introduction that grabs the reader's attention and clearly states the article's purpose.\n\n"
+        f"**Key Aspects of {topic}**\n"
+        f"Discuss the main points related to '{topic}'. Use clear language appropriate for the target level. "
+        f"Consider using examples or simple explanations.\n\n"
+        f"**Conclusion**\n"
+        f"Summarize the main points and offer a concluding thought or encourage further learning about '{topic}'.\n\n"
+        f"This content should be replaced by actual output from an LLM service in a real application."
+    )
+    # Tags could be derived from topic, LLM output, or a combination
+    generated_tags = [tag.strip().lower() for tag in topic.split(',')] + ["llm-generated", level_id]
+    generated_tags = list(set(filter(None, generated_tags))) # Remove empty strings and duplicates
 
-    if not generated_content:
-        click.echo("LLM failed to generate content. Aborting.")
-        exit(1) # Or handle retry logic
+    # (Future enhancement: LLM could also generate comprehension questions)
+    # generated_questions_data = [
+    #     { "_id": "q1", "questionTextEnglish": "What is the main idea of the article?", "questionType": "short_answer", ... },
+    #     { "_id": "q2", "questionTextEnglish": "Which of these is mentioned?", "questionType": "multiple_choice", ... }
+    # ]
+    # has_comprehension_questions = bool(generated_questions_data) if generated_questions_data else False
+    has_comprehension_questions = False # Default for now
 
-    click.echo("LLM content generated (placeholder).")
+    if not generated_content or not generated_title:
+        click.echo("LLM (placeholder) failed to generate title or content. Aborting.", err=True)
+        exit(1)
 
-    # --- Prepare Article Data ---
-    # 3. Prepare the data structure for Firestore
-    #    - Generate a unique article ID (e.g., using UUID or a Firestore auto-ID)
-    #    - Include generated_title, generated_content, level, tags, publishedAt (server timestamp)
-    #    - You might want to add fields like 'source': 'llm_generator'
+    click.echo("LLM content (placeholder) generated successfully.")
 
-    # Using Firestore auto-ID for simplicity in skeleton
-    doc_ref = firestore_db.collection('articles').document() # Creates a document reference with an auto-ID
-    article_id = doc_ref.id # Get the generated ID
-
+    # --- Prepare Article Data for Firestore ---
+    # 3. Prepare the data structure aligning with your Firestore schema
+    # Firestore will auto-generate an ID if .document() is called without an ID
+    article_collection_ref = firestore_db.collection('articles')
+    
     article_data = {
         'title': generated_title,
         'content': generated_content,
-        'level': level,
-        'tags': generated_tags,
-        'publishedAt': firestore.FieldValue.server_timestamp(), # Use server timestamp
-        'source': 'llm_generator',
-        'topic': topic # Store original topic for reference
+        'levelIds': [level_id],  # Array of strings
+        'tags': generated_tags,   # Array of strings
+        'createdAt': firestore.FieldValue.server_timestamp(),
+        'updatedAt': firestore.FieldValue.server_timestamp(),
+        'scrapedAt': firestore.FieldValue.server_timestamp(), # Assuming 'scrapedAt' for LLM generation means 'content_generated_at'
+        'sourceUrl': f"llm_generated_by_script/topic_{topic.lower().replace(' ', '_').replace(',', '_')}", # Make a simple slug
+        'hasComprehensionQuestions': has_comprehension_questions,
+        # 'article_id' is not stored in the document itself, it's the document's name/key.
     }
 
     # --- Add to Firestore ---
     # 4. Add the prepared data to the 'articles' collection
     try:
-        doc_ref.set(article_data)
-        click.echo(f"Article '{generated_title}' added successfully with ID '{article_id}'.")
+        doc_ref = article_collection_ref.add(article_data) # add() returns a tuple (timestamp, DocumentReference)
+        article_id = doc_ref[1].id # The DocumentReference is the second element
+        click.echo(f"Article '{article_data['title']}' added successfully to 'articles' collection with ID: {article_id}.")
+
+        # (Future enhancement: If questions were generated, add them to the subcollection)
+        # if has_comprehension_questions and generated_questions_data:
+        #     questions_subcollection_ref = article_collection_ref.document(article_id).collection('questions')
+        #     for q_data in generated_questions_data:
+        #         q_doc_id = q_data.pop('_id', None) # Use provided ID or let Firestore auto-generate
+        #         q_data['createdAt'] = firestore.FieldValue.server_timestamp()
+        #         q_data['updatedAt'] = firestore.FieldValue.server_timestamp()
+        #         # Add other required fields for questions if any
+        #         if q_doc_id:
+        #             questions_subcollection_ref.document(q_doc_id).set(q_data)
+        #         else:
+        #             new_q_ref = questions_subcollection_ref.add(q_data) # Store ref if ID needed
+        #     click.echo(f"Added {len(generated_questions_data)} comprehension questions to subcollection for article {article_id}.")
+
     except Exception as e:
-        click.echo(f"Error adding article to Firestore: {e}")
+        click.echo(f"Error adding article to Firestore: {e}", err=True)
         exit(1)
 
-
-# This allows the command to be run directly or imported into a main CLI group
 if __name__ == '__main__':
+    # This makes the script executable from the command line.
+    # Ensure FIREBASE_SERVICE_ACCOUNT_KEY_PATH environment variable is set,
+    # or pass --key-path argument.
+    # Example:
+    # export FIREBASE_SERVICE_ACCOUNT_KEY_PATH="/path/to/your/serviceAccountKey.json"
+    # python english-language-helper/cli/llm_article_generator.py --topic "Climate Change Effects" --level-order 1
+    #
+    # To see help:
+    # python english-language-helper/cli/llm_article_generator.py --help
     generate_article()

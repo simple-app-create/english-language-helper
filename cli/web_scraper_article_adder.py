@@ -1,45 +1,12 @@
 import click
-import firebase_admin
-from firebase_admin import credentials
-from firebase_admin import firestore
-import os
+from firebase_admin import firestore # For firestore.FieldValue
+from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR
 # import requests # Potential library for fetching web content
 # from bs4 import BeautifulSoup # Potential library for parsing HTML
 
-
-# Define the name of the environment variable for the key path
-SERVICE_ACCOUNT_KEY_ENV_VAR = 'FIREBASE_SERVICE_ACCOUNT_KEY_PATH'
-
-# Global variable for the Firestore database client
-db = None
-
-def get_firestore_client(key_path=None):
-    """Initializes Firebase Admin SDK and returns Firestore client."""
-    global db
-    if db is not None:
-        return db # Return existing client if already initialized
-
-    # Check if key_path is provided or can be read from env var
-    if key_path is None:
-         key_path = os.environ.get(SERVICE_ACCOUNT_KEY_ENV_VAR)
-
-    if not key_path:
-        click.echo(f"Error: Firebase service account key path is required. Set {SERVICE_ACCOUNT_KEY_ENV_VAR} env var or pass --key-path.")
-        return None # Indicate failure
-
-    try:
-        cred = credentials.Certificate(key_path)
-        if not firebase_admin._apps:
-             firebase_admin.initialize_app(cred)
-        else:
-            firebase_admin.get_app() # Use default app if already initialized
-
-        db = firestore.client()
-        # click.echo("Firebase Admin SDK initialized successfully.") # Optional
-        return db
-    except Exception as e:
-        click.echo(f"Error initializing Firebase: {e}")
-        return None # Indicate failure
+# SERVICE_ACCOUNT_KEY_ENV_VAR is now imported from firestore_utils
+# Global db client is managed within get_firestore_client or passed via ctx.obj (if this were a group command)
+# Local get_firestore_client function is removed
 
 
 @click.command()
@@ -67,9 +34,10 @@ def add_scraped_article(key_path, url, level):
     Scrapes content from a given URL, and adds it as a new article
     to the 'articles' collection in Firestore.
     """
-    # 1. Initialize Firestore client
+    # 1. Initialize Firestore client using the utility function
     firestore_db = get_firestore_client(key_path)
     if firestore_db is None:
+        click.echo("Failed to initialize Firestore client. Aborting.", err=True)
         exit(1) # Exit if Firestore initialization failed
 
     click.echo(f"Attempting to scrape article from: {url}")

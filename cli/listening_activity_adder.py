@@ -1,42 +1,8 @@
 import click
-import firebase_admin
-from firebase_admin import credentials
-from firebase_admin import firestore
-import os
-
-# Define the name of the environment variable for the key path
-SERVICE_ACCOUNT_KEY_ENV_VAR = 'FIREBASE_SERVICE_ACCOUNT_KEY_PATH'
-
-# Global variable for the Firestore database client
-db = None
-
-def get_firestore_client(key_path=None):
-    """Initializes Firebase Admin SDK and returns Firestore client."""
-    global db
-    if db is not None:
-        return db # Return existing client if already initialized
-
-    # Check if key_path is provided or can be read from env var
-    if key_path is None:
-         key_path = os.environ.get(SERVICE_ACCOUNT_KEY_ENV_VAR)
-
-    if not key_path:
-        click.echo(f"Error: Firebase service account key path is required. Set {SERVICE_ACCOUNT_KEY_ENV_VAR} env var or pass --key-path.")
-        return None # Indicate failure
-
-    try:
-        cred = credentials.Certificate(key_path)
-        if not firebase_admin._apps:
-             firebase_admin.initialize_app(cred)
-        else:
-            firebase_admin.get_app() # Use default app if already initialized
-
-        db = firestore.client()
-        # click.echo("Firebase Admin SDK initialized successfully.") # Optional
-        return db
-    except Exception as e:
-        click.echo(f"Error initializing Firebase: {e}")
-        return None # Indicate failure
+from firebase_admin import firestore # For firestore.FieldValue
+from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR
+# Removed os, firebase_admin, credentials imports as they are handled by firestore_utils
+# Removed local SERVICE_ACCOUNT_KEY_ENV_VAR, db global, and get_firestore_client function
 
 
 @click.command()
@@ -82,6 +48,7 @@ def add_listening_activity(key_path, audio_url, title, level, transcript_file, t
     # 1. Initialize Firestore client
     firestore_db = get_firestore_client(key_path)
     if firestore_db is None:
+        click.echo("Failed to initialize Firestore client. Aborting.", err=True)
         exit(1) # Exit if Firestore initialization failed
 
     click.echo(f"Adding listening activity: \'{title}\' from {audio_url} for level {level}...")

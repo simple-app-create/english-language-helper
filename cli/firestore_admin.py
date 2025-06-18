@@ -1,55 +1,53 @@
 import os
 import click
-import firebase_admin
-from firebase_admin import credentials
-from firebase_admin import firestore
+# firebase_admin and credentials will be handled by firestore_utils
+from firebase_admin import firestore # For firestore.FieldValue
+from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR
 import datetime # For potential date parsing
 
-# Define the name of the environment variable
-SERVICE_ACCOUNT_KEY_ENV_VAR = 'FIREBASE_SERVICE_ACCOUNT_KEY_PATH'
-
-# Global variable for the Firestore database client
-db = None
+# SERVICE_ACCOUNT_KEY_ENV_VAR is now imported from firestore_utils
+# Global db client is now managed within get_firestore_client or passed via ctx.obj
 
 @click.group()
 @click.option(
     '--key-path',
-    envvar=SERVICE_ACCOUNT_KEY_ENV_VAR,
+    envvar=SERVICE_ACCOUNT_KEY_ENV_VAR, # Now imported from firestore_utils
     type=click.Path(exists=True, dir_okay=False, resolve_path=True),
     help=f'Path to the Firebase service account key JSON file. Can also be set via the {SERVICE_ACCOUNT_KEY_ENV_VAR} environment variable.',
+    required=False, # get_firestore_client will handle if it's truly missing (from path or env var)
 )
 @click.pass_context
 def cli(ctx, key_path):
     """A CLI tool to manage English Language Helper data in Firestore."""
-    global db
-    if not key_path:
-        click.echo("Error: Firebase service account key path is required.")
-        click.echo(f"Please set the '{SERVICE_ACCOUNT_KEY_ENV_VAR}' environment variable or use the '--key-path' command-line option.")
-        click.echo(ctx.get_help())
+    # Firebase initialization is now handled by get_firestore_client
+    firestore_client = get_firestore_client(key_path=key_path) 
+    
+    if firestore_client is None:
+        # get_firestore_client already prints detailed errors
+        click.echo("Failed to initialize Firestore. Exiting.", err=True)
         ctx.exit(1)
-    try:
-        cred = credentials.Certificate(key_path)
-        if not firebase_admin._apps:
-             firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        # click.echo("Firebase Admin SDK initialized successfully.") # Optional
-    except Exception as e:
-        click.echo(f"Error initializing Firebase: {e}")
-        ctx.exit(1)
+        
+    ctx.obj = firestore_client # Store the client in the context object for subcommands
+    # click.echo("Firebase Admin SDK initialized successfully via utils and client stored in context.", err=True) # Optional debug
 
 @cli.command()
-def check_db_connection():
+@click.pass_context # Ensure context is passed to access ctx.obj
+def check_db_connection(ctx):
     """Checks if the database connection is working."""
+    db = ctx.obj # Get client from context
     if db:
         try:
             articles_ref = db.collection('articles') # Assuming 'articles' is a valid collection
-            docs = articles_ref.limit(1).get()
+            # Use stream() for iterators and list() to consume and actually perform the read.
+            docs = articles_ref.limit(1).stream() 
+            list(docs) 
             click.echo("Successfully connected to Firestore and can perform reads.")
         except Exception as e:
-            click.echo(f"Connected to Firestore, but encountered an error performing a test read: {e}")
-            click.echo("Please ensure your service account has the necessary permissions (e.g., 'roles/datastore.user').")
+            click.echo(f"Connected to Firestore, but encountered an error performing a test read: {e}", err=True)
+            click.echo("Please ensure your service account has the necessary permissions (e.g., 'roles/datastore.user').", err=True)
     else:
-        click.echo("Database not initialized. Ensure Firebase initialization succeeded.")
+        # This case should ideally be caught by the cli group init if ctx.obj is None
+        click.echo("Database client not found in context. Ensure Firebase initialization succeeded in the main CLI group.", err=True)
 
 @cli.command()
 @click.argument('article_id')
@@ -82,20 +80,21 @@ def check_db_connection():
 @click.option('--summary-traditional-chinese', type=str, default="", help='A brief Traditional Chinese summary.')
 @click.option('--estimated-reading-time', type=int, help='Estimated reading time in minutes.')
 @click.option(
-    '--has-comprehension-questions',
+    \'--has-comprehension-questions\',\
     is_flag=True, # Makes it a boolean flag
     default=False,
-    help='Set this flag if the article has comprehension questions.'
-)
-def add_article(article_id, title, content_file, level_ids,
+    help=\'Set this flag if the article has comprehension questions.\'\n)
+@click.pass_context # Ensure context is passed
+def add_article(ctx, article_id, title, content_file, level_ids,
                 source_url, source_name, publication_date_str, author,
                 tags, summary_english, summary_traditional_chinese,
                 estimated_reading_time, has_comprehension_questions):
     """Adds or updates a reading article in the 'articles' collection using the defined schema."""
+    db = ctx.obj # Get client from context
     if db is None:
-        click.echo("Database not initialized. Cannot add article.")
-        # Consider using ctx.exit(1) if you pass context to this command
-        exit(1)
+        click.echo("Database client not found in context. Cannot add article.", err=True)
+        # This state should ideally be prevented by the main cli group failing first.
+        ctx.exit(1)
 
     # Initialize article_data with all fields from the schema
     article_data = {
@@ -121,8 +120,8 @@ def add_article(article_id, title, content_file, level_ids,
             with open(content_file, 'r', encoding='utf-8') as f:
                 article_data['content'] = f.read()
         except Exception as e:
-            click.echo(f"Error reading content file: {e}")
-            return # Stop if content file can't be read
+            click.echo(f"Error reading content file: {e}", err=True)
+            ctx.exit(1) # Exit if content file can't be read
     
     if publication_date_str:
         try:
@@ -131,7 +130,7 @@ def add_article(article_id, title, content_file, level_ids,
             datetime.datetime.strptime(publication_date_str, '%Y-%m-%d')
             article_data['publicationDate'] = publication_date_str
         except ValueError:
-            click.echo(f"Warning: --publication-date-str '{publication_date_str}' is not in YYYY-MM-DD format. 'publicationDate' field will be None.")
+            click.echo(f"Warning: --publication-date-str '{publication_date_str}' is not in YYYY-MM-DD format. 'publicationDate' field will be None.", err=True) # Use err=True for warnings too
             article_data['publicationDate'] = None # Or store the malformed string if preferred.
 
     # Ensure estimated_reading_time is an int or None, not 0 if not provided
@@ -153,7 +152,8 @@ def add_article(article_id, title, content_file, level_ids,
             else:
                 click.echo(f"  {key}: {value}")
     except Exception as e:
-        click.echo(f"Error processing article: {e}")
+        click.echo(f"Error processing article: {e}", err=True)
+        ctx.exit(1) # Exit on error
 
 if __name__ == '__main__':
     cli()
