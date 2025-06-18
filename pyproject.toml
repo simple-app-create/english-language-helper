@@ -1,0 +1,14 @@
+[project]
+name = "english-language-helper"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "streamlit>=1.45.1",
+    "firebase-admin>=6.5.0", # Add this dependency for Firebase Admin SDK
+    "click>=8.1.7", # Add this dependency for building CLIs
+    "requests>=2.32.4",
+    "trafilatura>=2.0.0",
+    "goose3>=3.1.19",
+]
