@@ -97,7 +97,7 @@ def add_scraped_article(key_path, url, level):
         'content': scraped_content,
         'level': level, # Using the provided level for now
         'tags': scraped_tags,
-        'publishedAt': firestore.FieldValue.server_timestamp(), # Use server timestamp
+        'publishedAt': firestore.SERVER_TIMESTAMP, # Use server timestamp
         'source': 'web_scraper',
         'sourceUrl': url
     }

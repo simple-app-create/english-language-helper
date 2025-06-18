@@ -80,10 +80,11 @@ def check_db_connection(ctx):
 @click.option('--summary-traditional-chinese', type=str, default="", help='A brief Traditional Chinese summary.')
 @click.option('--estimated-reading-time', type=int, help='Estimated reading time in minutes.')
 @click.option(
-    \'--has-comprehension-questions\',\
+    '--has-comprehension-questions',
     is_flag=True, # Makes it a boolean flag
     default=False,
-    help=\'Set this flag if the article has comprehension questions.\'\n)
+    help='Set this flag if the article has comprehension questions.'
+)
 @click.pass_context # Ensure context is passed
 def add_article(ctx, article_id, title, content_file, level_ids,
                 source_url, source_name, publication_date_str, author,
@@ -102,7 +103,7 @@ def add_article(ctx, article_id, title, content_file, level_ids,
         'sourceUrl': source_url,
         'sourceName': source_name,
         'content': "", # Default, updated if content_file is provided
-        'scrapedAt': firestore.FieldValue.server_timestamp(), # Assuming CLI adds "scraped" content
+        'scrapedAt': firestore.SERVER_TIMESTAMP, # Assuming CLI adds "scraped" content
         'publicationDate': None, # Default, updated if publication_date_str is valid
         'levelIds': [level_id.strip() for level_id in level_ids.split(',') if level_id.strip()],
         'author': author,
@@ -111,8 +112,8 @@ def add_article(ctx, article_id, title, content_file, level_ids,
         'summaryTraditionalChinese': summary_traditional_chinese,
         'estimatedReadingTimeMinutes': estimated_reading_time, # click handles type or default None
         'hasComprehensionQuestions': has_comprehension_questions,
-        'createdAt': firestore.FieldValue.server_timestamp(),
-        'updatedAt': firestore.FieldValue.server_timestamp()
+        'createdAt': firestore.SERVER_TIMESTAMP,
+        'updatedAt': firestore.SERVER_TIMESTAMP
     }
 
     if content_file:
@@ -147,7 +148,7 @@ def add_article(ctx, article_id, title, content_file, level_ids,
         click.echo(f"Article '{title}' (ID: '{article_id}') added/updated successfully.")
         click.echo("Data written:")
         for key, value in article_data.items():
-            if value == firestore.FieldValue.server_timestamp():
+            if value == firestore.SERVER_TIMESTAMP:
                 click.echo(f"  {key}: Server Timestamp (will be set by Firestore)")
             else:
                 click.echo(f"  {key}: {value}")

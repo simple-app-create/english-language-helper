@@ -2,15 +2,16 @@ import click
 import firebase_admin
 from firebase_admin import credentials, firestore
 import os
+from typing import Optional # Import Optional
 
 # Define the name of the environment variable for the key path
 SERVICE_ACCOUNT_KEY_ENV_VAR = 'FIREBASE_SERVICE_ACCOUNT_KEY_PATH'
 
 # Global variable for the Firestore database client
 # This helps to reuse the initialized client within the same process/session
-_db_client = None
+_db_client: Optional[firestore.Client] = None # Explicitly type _db_client to allow None
 
-def get_firestore_client(key_path: str = None):
+def get_firestore_client(key_path: str = None) -> Optional[firestore.Client]: # Add return type hint
     """
     Initializes Firebase Admin SDK if not already initialized and returns a Firestore client.
     It reuses an existing client if one has already been initialized by this function.

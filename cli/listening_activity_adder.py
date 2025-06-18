@@ -82,7 +82,7 @@ def add_listening_activity(key_path, audio_url, title, level, transcript_file, t
         'level': level,
         'transcript': transcript_content, # Store transcript (can be empty string)
         'tags': [tag.strip() for tag in tags.split(',')] if tags else [], # Store tags as a list
-        'publishedAt': firestore.FieldValue.server_timestamp(), # Use server timestamp
+        'publishedAt': firestore.SERVER_TIMESTAMP, # Use server timestamp
         # Add other fields like duration, speakers, etc. as needed
     }
 
