@@ -15,23 +15,49 @@ import google.generativeai as genai
 from google.api_core import exceptions as google_exceptions # For more specific error handling
 
 # --- Pydantic Model for LLM Output Validation ---
+class ChoiceItem(BaseModel):
+    id: Annotated[str, Field(min_length=1, pattern=r"^[A-Z0-9]+$")] # Simple IDs like "A", "B", "1"
+    text: Annotated[str, Field(min_length=1)]
+
+class ComprehensionQuestionItem(BaseModel):
+    question: Annotated[str, Field(min_length=1)]
+    choices: Annotated[List[ChoiceItem], Field(min_items=2, max_items=4)] # 2-4 choices per question
+    correct_choice_id: Annotated[str, Field(min_length=1)] # Must match an id in its 'choices'
+
 class LLMArticleOutput(BaseModel):
     title: Annotated[str, Field(min_length=1)]  # Title must not be empty
     content: Annotated[str, Field(min_length=1)] # Content must not be empty
     # Tags can be an empty list, but if tags exist, they must be non-empty strings.
     tags: Annotated[List[Annotated[str, Field(min_length=1)]], Field(min_length=0)]
+    comprehension_questions: Annotated[List[ComprehensionQuestionItem], Field(min_items=0, max_items=5)] | None = None # Optional, 0-5 questions
 
 # --- LLM Configuration & System Prompt ---
-LLM_SYSTEM_PROMPT = """
+LLM_SYSTEM_PROMPT = """\
 You are an expert content creator and linguist specializing in crafting clear, engaging, and educational articles for English language learners. Your goal is to generate an article based on a given topic and target reading level.
 
 **Instructions:**
 1.  **Target Audience:** The article is for English language learners at the specified reading level. Use vocabulary, sentence structures, and concepts appropriate for this level.
 2.  **Content:** The article should be informative, well-structured, and factually accurate. It needs an introduction, body, and conclusion.
 3.  **Output Format:** YOU MUST PROVIDE YOUR RESPONSE STRICTLY AS A VALID JSON OBJECT with the following keys:
-    *   `"title"` (string): A concise and engaging title for the article.
-    *   `"content"` (string): The full text of the article. Paragraphs MUST be separated by a double newline character (`\\n\\n`).
-    *   `"tags"` (array of strings): A list of 3-5 relevant lowercase keywords. Include the main topic.
+    *   `\"title\"` (string): A concise and engaging title for the article.
+    *   `\"content\"` (string): The full text of the article. Paragraphs MUST be separated by a double newline character (`\\n\\n`).
+    *   `\"tags\"` (array of strings): A list of 3-5 relevant lowercase keywords. Include the main topic.
+    *   `\"comprehension_questions\"` (array of objects, optional): A list of 2-3 multiple-choice comprehension questions based on the article content. If you cannot generate relevant questions, you may omit this field or provide an empty list. Each object in the array MUST strictly adhere to the following structure:
+        *   `\"question\"` (string): The text of the multiple-choice question.
+        *   `\"choices\"` (array of objects): A list of 2 to 4 answer choices. Each choice object MUST contain:
+            *   `\"id\"` (string): A unique identifier for the choice (e.g., "A", "B", "C", "D").
+            *   `\"text\"` (string): The text content of the answer choice.
+        *   `\"correct_choice_id\"` (string): The "id" (from the "choices" list) that represents the correct answer.
+        Example of a single question object within the "comprehension_questions" array:
+        {
+          "question": "What is the main topic discussed in the article?",
+          "choices": [
+            {"id": "A", "text": "The history of space exploration."},
+            {"id": "B", "text": "The impact of climate change."},
+            {"id": "C", "text": "The benefits of regular exercise."}
+          ],
+          "correct_choice_id": "B"
+        }
 
 **Input Variables (will be provided in the user prompt):**
 *   `topic`: The subject of the article.
@@ -41,166 +67,157 @@ You are an expert content creator and linguist specializing in crafting clear, e
 Generate the article based on the provided topic and level_name, returning it in the specified JSON format.
 """
 
-# --- LLM Interaction Stubs (to be implemented next) ---
-def _call_openai_llm(api_key, base_url, model, system_prompt, user_prompt):
+RANDOM_TOPIC_SYSTEM_PROMPT = """
+You are an assistant that generates creative and suitable article topics.
+Your task is to provide a single, specific, and engaging topic title for an article aimed at English Language art students.
+The topic should be interesting and relevant to their studies, focusing on aspects of English language, literature, art, science, technology, cultures, natures, Taiwan, geography, geology, and world history from an English learner's perspective.
+Return ONLY the topic title as a plain string, without any quotation marks, labels (e.g., "Topic:"), or additional text.
+Example of good output: The Symbolism of Colors in Shakespeare's Plays
+Example of bad output: "Topic: The Symbolism of Colors in Shakespeare's Plays"
+Example of bad output: Here is a topic for you: The Symbolism of Colors in Shakespeare's Plays
+"""
+
+# --- Unified LLM Request Function ---
+def _perform_llm_request(
+    provider: str,
+    model_name_option: str | None,
+    llm_api_key_option: str | None,
+    llm_base_url_option: str | None,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float,
+    request_json_response: bool
+) -> str | None:
     """
-    Calls OpenAI or an OpenAI-compatible LLM to generate article content.
-    Returns a dictionary like {"title": ..., "content": ..., "tags": ...} or None if an error occurs.
+    Core function to interact with the specified LLM provider.
+    Returns the raw text response from the LLM or None if an error occurs.
     """
-    click.echo(f"  Attempting to call OpenAI/Compatible LLM: model={model}, base_url={base_url or 'default OpenAI endpoint'}")
-    response_content: str = ""  # Initialize for Pyright
-    raw_llm_output: dict = {}   # Initialize for Pyright
+    click.echo(click.style(f"  Preparing LLM request for {provider.upper()}...", fg="blue"))
+    llm_response_text: str | None = None
+
     try:
-        client = OpenAI(
-            api_key=api_key,
-            base_url=base_url # Will be None for official OpenAI, set for local endpoints
-        )
+        if provider == 'openai':
+            current_api_key = llm_api_key_option or os.environ.get("OPENAI_API_KEY")
+            if not current_api_key:
+                click.echo(click.style("OpenAI API key not found. Set OPENAI_API_KEY or use --llm-api-key.", fg="red"), err=True)
+                return None
 
-        # Explicitly type messages for clarity, though dicts often work due to Pydantic models in openai lib
-        messages: List[ChatCompletionMessageParam] = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
+            client = OpenAI(api_key=current_api_key, base_url=llm_base_url_option) # base_url will be None for official OpenAI
+            effective_model = model_name_option or "gpt-3.5-turbo"
+            click.echo(f"  Using OpenAI model: {effective_model} (Base URL: {llm_base_url_option or 'default'})")
 
-        # For newer models that support JSON mode reliably:
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            response_format={"type": "json_object"} # Request JSON output
-        )
+            messages: List[ChatCompletionMessageParam] = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+            response_format_arg = {"type": "json_object"} if request_json_response else None
 
-        response_content = response.choices[0].message.content
-        if not response_content:
-            click.echo("  LLM returned empty content.", err=True)
+            response = client.chat.completions.create(
+                model=effective_model,
+                messages=messages,
+                temperature=temperature,
+                response_format=response_format_arg
+            )
+            llm_response_text = response.choices[0].message.content
+
+        elif provider == 'gemini':
+            current_api_key = llm_api_key_option or os.environ.get("GOOGLE_API_KEY")
+            if not current_api_key:
+                click.echo(click.style("Google API key not found. Set GOOGLE_API_KEY or use --llm-api-key.", fg="red"), err=True)
+                return None
+
+            genai.configure(api_key=current_api_key)
+            effective_model = model_name_option or "gemini-1.5-flash-latest"
+            click.echo(f"  Using Gemini model: {effective_model}")
+
+            generation_config = genai.types.GenerationConfig(
+                temperature=temperature,
+                response_mime_type="application/json" if request_json_response else "text/plain"
+            )
+            model_instance = genai.GenerativeModel(
+                model_name=effective_model,
+                system_instruction=system_prompt,
+                generation_config=generation_config
+            )
+            response = model_instance.generate_content(user_prompt)
+            llm_response_text = response.text
+
+        elif provider == 'lmstudio' or provider == 'ollama':
+            effective_base_url = llm_base_url_option
+            if not effective_base_url:
+                default_port = 1234 if provider == 'lmstudio' else 11434
+                effective_base_url = f"http://localhost:{default_port}/v1"
+                click.echo(click.style(f"No base URL provided for {provider}, defaulting to {effective_base_url}", fg="yellow"))
+
+            # API key for local LLMs is usually optional or "not-needed"
+            client = OpenAI(base_url=effective_base_url, api_key=llm_api_key_option or "not-needed")
+            effective_model = model_name_option
+
+            if not effective_model:
+                try:
+                    click.echo(click.style(f"No model specified for {provider}, attempting to use first available model...", fg="yellow"))
+                    models_response = client.models.list()
+                    if models_response.data:
+                        effective_model = models_response.data[0].id
+                        click.echo(click.style(f"Using first available model for {provider}: {effective_model}", fg="yellow"))
+                    else:
+                        click.echo(click.style(f"No model specified and no models found for {provider} at {effective_base_url}. Ensure server is running and a model is loaded/available.", fg="red"), err=True)
+                        return None
+                except Exception as e:
+                    click.echo(click.style(f"Error fetching models for {provider} (is server running/configured?): {e}", fg="red"), err=True)
+                    return None
+
+            click.echo(f"  Using {provider} model: {effective_model} via {effective_base_url}")
+            messages: List[ChatCompletionMessageParam] = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+            response_format_arg = {"type": "json_object"} if request_json_response else None
+
+            response = client.chat.completions.create(
+                model=effective_model,
+                messages=messages,
+                temperature=temperature,
+                response_format=response_format_arg
+            )
+            llm_response_text = response.choices[0].message.content
+        else:
+            click.echo(click.style(f"Provider '{provider}' is not supported by _perform_llm_request.", fg="red"), err=True)
             return None
 
-        # Attempt to parse and validate the JSON response
-        raw_llm_output = json.loads(response_content)
-        validated_data = LLMArticleOutput(**raw_llm_output)
-        return validated_data.model_dump() # Return as a dictionary
-
-    except json.JSONDecodeError as e:
-        click.echo(f"  Error decoding JSON response from OpenAI LLM: {e}. Response was: {response_content}", err=True)
-        return None
-    except ValidationError as e:
-        click.echo(f"  OpenAI LLM response failed Pydantic validation: {e}", err=True)
-        # It's helpful to log the raw data that caused the validation error
-        if 'raw_llm_output' in locals():
-            click.echo(f"  Raw response causing validation error: {raw_llm_output}", err=True)
-        else: # Should not happen if json.loads succeeded
-            click.echo(f"  Raw response content (could not parse as JSON but attempted Pydantic): {response_content}", err=True)
-        return None
-    except APIConnectionError as e:
-        click.echo(f"  OpenAI API Connection Error: {e}", err=True)
-        return None
-    except RateLimitError as e:
-        click.echo(f"  OpenAI API Rate Limit Exceeded: {e}", err=True)
-        return None
-    except APIStatusError as e: # Catch other API errors
-        click.echo(f"  OpenAI API Status Error (code {e.status_code}): {e.message}", err=True)
-        return None
-    except Exception as e:
-        click.echo(f"  An unexpected error occurred while calling the OpenAI LLM: {e}", err=True)
-        # import traceback # For more detailed debugging if needed
-        # click.echo(traceback.format_exc(), err=True)
-        return None
-
-def _call_gemini_llm(api_key, model, system_prompt, user_prompt):
-    """
-    Calls Google Gemini LLM to generate article content.
-    Returns a dictionary like {"title": ..., "content": ..., "tags": ...} or None if an error occurs.
-    """
-    click.echo(f"  Attempting to call Gemini LLM: model={model}")
-    response_text_for_error = "N/A" # Initialize for error reporting
-    raw_llm_output: dict = {} # Initialize for Pyright
-    try:
-        genai.configure(api_key=api_key)
-
-        # Gemini uses 'system_instruction' and specific generation_config for JSON
-        generation_config = genai.types.GenerationConfig(
-            response_mime_type="application/json"
-        )
-
-        gemini_model = genai.GenerativeModel(
-            model_name=model,
-            system_instruction=system_prompt,
-            generation_config=generation_config
-        )
-
-        response = gemini_model.generate_content(user_prompt)
-        response_text_for_error = response.text # Store for potential error message
-
-        if not response.text:
-            click.echo("  Gemini LLM returned empty text content.", err=True)
+        if not llm_response_text or not llm_response_text.strip():
+            click.echo(click.style(f"LLM ({provider.upper()}) returned empty or whitespace-only content.", fg="red"), err=True)
             return None
-            
-        # Attempt to parse and validate the JSON response
-        raw_llm_output = json.loads(response.text)
-        validated_data = LLMArticleOutput(**raw_llm_output)
-        return validated_data.model_dump() # Return as a dictionary
 
-    except json.JSONDecodeError as e:
-        click.echo(f"  Error decoding JSON response from Gemini LLM: {e}. Response text was: {response_text_for_error}", err=True)
+        click.echo(click.style(f"LLM ({provider.upper()}) raw response received.", fg="green"))
+        return llm_response_text.strip()
+
+    except ImportError as ie:
+        if 'openai' in str(ie).lower() and provider in ['openai', 'lmstudio', 'ollama']:
+            click.echo(click.style(f"OpenAI SDK not installed. Please install it: pip install openai", fg="red"), err=True)
+        elif 'google.generativeai' in str(ie).lower() and provider == 'gemini':
+            click.echo(click.style(f"Google Generative AI SDK not installed. Please install it: pip install google-generativeai", fg="red"), err=True)
+        else:
+            click.echo(click.style(f"Import error for {provider}: {ie}", fg="red"), err=True)
         return None
-    except ValidationError as e:
-        click.echo(f"  Gemini LLM response failed Pydantic validation: {e}", err=True)
-        if 'raw_llm_output' in locals():
-             click.echo(f"  Raw response causing validation error: {raw_llm_output}", err=True)
-        else: # Should not happen if json.loads succeeded
-            click.echo(f"  Raw response text (could not parse as JSON but attempted Pydantic): {response_text_for_error}", err=True)
+    except APIConnectionError as e: # OpenAI specific or compatible
+        click.echo(click.style(f"  {provider.upper()} API Connection Error: {e}", fg="red"), err=True)
         return None
-    except google_exceptions.GoogleAPIError as e: # Catch specific Google API errors
-        click.echo(f"  Google Gemini API Error: {e}", err=True)
+    except RateLimitError as e: # OpenAI specific or compatible
+        click.echo(click.style(f"  {provider.upper()} API Rate Limit Exceeded: {e}", fg="red"), err=True)
+        return None
+    except APIStatusError as e: # OpenAI specific or compatible
+        click.echo(click.style(f"  {provider.upper()} API Status Error (code {e.status_code}): {e.message}", fg="red"), err=True)
+        return None
+    except google_exceptions.GoogleAPIError as e: # Gemini specific
+        click.echo(click.style(f"  Google Gemini API Error: {e}", fg="red"), err=True)
         return None
     except Exception as e:
-        click.echo(f"  An unexpected error occurred while calling the Gemini LLM: {e}", err=True)
+        click.echo(click.style(f"  An unexpected error occurred during LLM request with {provider.upper()}: {e}", fg="red"), err=True)
+        # For more detailed debugging:
         # import traceback
         # click.echo(traceback.format_exc(), err=True)
         return None
-
-# --- New LLM Interaction Functions for Local LLMs ---
-def _call_lmstudio_llm(api_key_option, base_url_option, model_name_option, system_prompt, user_prompt):
-    """
-    Calls an LM Studio instance (expected to be OpenAI-compatible).
-    """
-    click.echo(f"  Configuring for LM Studio: model={model_name_option or 'default/loaded in LMStudio'}")
-    
-    effective_base_url = base_url_option or "http://localhost:1234/v1" # Common LMStudio default
-    # LMStudio typically doesn't require an API key when serving locally via its OpenAI-compatible endpoint.
-    effective_api_key = api_key_option or "not-needed-for-lmstudio" 
-    effective_model = model_name_option or "local-model" # Placeholder if server ignores it
-
-    return _call_openai_llm(
-        api_key=effective_api_key,
-        base_url=effective_base_url,
-        model=effective_model,
-        system_prompt=system_prompt,
-        user_prompt=user_prompt
-    )
-
-def _call_ollama_llm(api_key_option, base_url_option, model_name_option, system_prompt, user_prompt):
-    """
-    Calls an Ollama instance (assuming an OpenAI-compatible endpoint, e.g., via a wrapper).
-    For native Ollama API, a different implementation would be needed using the 'ollama' library.
-    """
-    click.echo(f"  Configuring for Ollama (OpenAI-compatible mode): model={model_name_option or 'not specified, server default'}")
-
-    effective_base_url = base_url_option or "http://localhost:11434/v1" 
-    effective_api_key = api_key_option or "not-needed-for-ollama" # Typically no API key for local Ollama
-    
-    if not model_name_option:
-        click.echo("  Warning: --model is highly recommended for Ollama to specify the model tag (e.g., 'llama2:7b'). Using a generic placeholder.", err=True)
-        effective_model = "local-model" 
-    else:
-        effective_model = model_name_option
-
-    return _call_openai_llm(
-        api_key=effective_api_key,
-        base_url=effective_base_url,
-        model=effective_model, 
-        system_prompt=system_prompt,
-        user_prompt=user_prompt
-    )
 
 # --- Core LLM Generation Logic ---
 def _generate_article_from_llm(provider, model_name_option, llm_api_key_option, llm_base_url_option, topic, level_name_for_prompt):
@@ -210,67 +227,37 @@ def _generate_article_from_llm(provider, model_name_option, llm_api_key_option, 
     """
     click.echo(f"\nAttempting to generate article using {provider.upper()} for topic '{topic}' at level '{level_name_for_prompt}'.")
     user_prompt = f"Generate an article on the topic '{topic}' for the '{level_name_for_prompt}' reading level."
-    llm_output_data = None
+
+    raw_llm_text_response = _perform_llm_request(
+        provider=provider,
+        model_name_option=model_name_option,
+        llm_api_key_option=llm_api_key_option,
+        llm_base_url_option=llm_base_url_option,
+        system_prompt=LLM_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        temperature=0.7,  # Default temperature for article generation
+        request_json_response=True
+    )
+
+    if not raw_llm_text_response:
+        click.echo(click.style(f"LLM ({provider.upper()}) did not return any text content for article generation.", fg="red"), err=True)
+        return None
 
     try:
-        if provider == 'openai':
-            current_api_key = llm_api_key_option or os.environ.get("OPENAI_API_KEY")
-            if not current_api_key:
-                 click.echo("Error: API key for OpenAI is required. Set --llm-api-key or OPENAI_API_KEY environment variable.", err=True)
-                 return None
-            effective_model = model_name_option or "gpt-3.5-turbo" # Default for OpenAI
-            llm_output_data = _call_openai_llm(
-                api_key=current_api_key,
-                base_url=None, # OpenAI uses default base_url
-                model=effective_model,
-                system_prompt=LLM_SYSTEM_PROMPT,
-                user_prompt=user_prompt
-            )
-        elif provider == 'lmstudio':
-            llm_output_data = _call_lmstudio_llm(
-                api_key_option=llm_api_key_option,
-                base_url_option=llm_base_url_option,
-                model_name_option=model_name_option,
-                system_prompt=LLM_SYSTEM_PROMPT,
-                user_prompt=user_prompt
-            )
-        elif provider == 'ollama':
-            llm_output_data = _call_ollama_llm(
-                api_key_option=llm_api_key_option,
-                base_url_option=llm_base_url_option,
-                model_name_option=model_name_option,
-                system_prompt=LLM_SYSTEM_PROMPT,
-                user_prompt=user_prompt
-            )
-        elif provider == 'gemini':
-            effective_model = model_name_option or "gemini-1.5-flash-latest" # Default for Gemini
-            current_api_key = llm_api_key_option or os.environ.get("GOOGLE_API_KEY")
-            if not current_api_key:
-                click.echo("Error: API key for Gemini is required. Set --llm-api-key or GOOGLE_API_KEY environment variable.", err=True)
-                return None
-            llm_output_data = _call_gemini_llm(
-                api_key=current_api_key,
-                model=effective_model,
-                system_prompt=LLM_SYSTEM_PROMPT, # Gemini's SDK handles system prompt
-                user_prompt=user_prompt
-            )
-        else:
-            # This case should ideally be caught by Click's Choice validation
-            click.echo(f"Provider '{provider}' is not supported in _generate_article_from_llm.", err=True) # Updated error message slightly
-            return None
-
-        if not llm_output_data or not isinstance(llm_output_data, dict) or not all(k in llm_output_data for k in ["title", "content", "tags"]):
-            click.echo(f"LLM ({provider.upper()}) did not return the expected JSON structure (title, content, tags). Response: {llm_output_data}", err=True)
-            return None
-        
-        click.echo(f"LLM ({provider.upper()}) content generated successfully.") # Removed "(from stub/placeholder)"
-        return llm_output_data
-
-    except Exception as e:
-        # Log the full exception for debugging if necessary
-        # import traceback
-        # click.echo(traceback.format_exc(), err=True)
-        click.echo(f"Error during LLM interaction with {provider.upper()}: {e}", err=True)
+        raw_llm_output = json.loads(raw_llm_text_response)
+        validated_data = LLMArticleOutput(**raw_llm_output)
+        click.echo(click.style(f"LLM ({provider.upper()}) article content generated and validated successfully.", fg="green"))
+        return validated_data.model_dump()
+    except json.JSONDecodeError as e:
+        click.echo(click.style(f"  Error decoding JSON response from LLM ({provider.upper()}) for article: {e}.", fg="red"), err=True)
+        click.echo(click.style(f"  Raw LLM response was: {raw_llm_text_response}", fg="red"), err=True)
+        return None
+    except ValidationError as e:
+        click.echo(click.style(f"  LLM ({provider.upper()}) article response failed Pydantic validation: {e}", fg="red"), err=True)
+        click.echo(click.style(f"  Raw LLM response causing validation error: {raw_llm_text_response}", fg="red"), err=True)
+        return None
+    except Exception as e: # Catch-all for unexpected issues during parsing/validation
+        click.echo(click.style(f"  Unexpected error processing LLM article response from {provider.upper()}: {e}", fg="red"), err=True)
         return None
 
 # --- Firestore Helper ---
@@ -283,60 +270,99 @@ def _get_level_details(firestore_db, level_order_num):
         if not level_docs:
             click.echo(f"Error: No level found in 'levels' collection with order = {level_order_num}. Please ensure a level with this order exists.", err=True)
             return None, None
-        
+
         level_doc = level_docs[0] # Get the first document
         level_id = level_doc.id
-        level_name_english = level_doc.get('nameEnglish', f"Level Order {level_order_num}") # Default if nameEnglish is missing
+        level_name_english = level_doc.get('nameEnglish') or f"Level Order {level_order_num}" # Default if nameEnglish is missing or empty
         click.echo(f"Using levelId: '{level_id}' (Name: '{level_name_english}') for order {level_order_num}.")
         return level_id, level_name_english
     except Exception as e:
         click.echo(f"Error querying 'levels' collection: {e}", err=True)
         return None, None
 
+def _generate_random_topic_with_llm(provider, model_name_option, llm_api_key_option, llm_base_url_option):
+    """
+    Generates a random topic string using the specified LLM provider.
+    Returns the topic string or None if generation fails.
+    """
+    click.echo(click.style(f"\nAttempting to generate a random topic using {provider.upper()}...", fg="cyan"))
+    user_prompt = "Generate a random topic suitable for English Language art students, focusing on language, literature, or art."
+
+    raw_topic_text = _perform_llm_request(
+        provider=provider,
+        model_name_option=model_name_option,
+        llm_api_key_option=llm_api_key_option,
+        llm_base_url_option=llm_base_url_option,
+        system_prompt=RANDOM_TOPIC_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+        temperature=0.8,
+        request_json_response=False # Expecting plain text for topic
+    )
+
+    if not raw_topic_text:
+        click.echo(click.style(f"LLM ({provider.upper()}) did not return any text content for topic generation.", fg="red"), err=True)
+        return None
+
+    try:
+        # Clean up potential quotation marks or "Topic:" prefixes from the LLM response
+        cleaned_topic_text = raw_topic_text.strip('\"\'').replace("Topic:", "").replace("topic:", "").strip()
+
+        if not cleaned_topic_text: # If stripping made it empty
+            click.echo(click.style(f"LLM ({provider.upper()}) returned an empty topic after cleaning. Original: '{raw_topic_text}'", fg="red"), err=True)
+            return None
+
+        click.echo(click.style(f"LLM ({provider.upper()}) suggested topic: \"{cleaned_topic_text}\"", fg="green"))
+        return cleaned_topic_text
+    except Exception as e: # Should be unlikely here unless raw_topic_text is not a string, or an issue with strip/replace
+        click.echo(click.style(f"Error cleaning topic from {provider.upper()}: {e}. Original text: '{raw_topic_text}'", fg="red"), err=True)
+        return None
+
 # --- Click Command ---
 @click.command()
 @click.option(
-    '--key-path', 
-    envvar=SERVICE_ACCOUNT_KEY_ENV_VAR, 
-    type=click.Path(exists=True, dir_okay=False, resolve_path=True), 
+    '--key-path',
+    envvar=SERVICE_ACCOUNT_KEY_ENV_VAR,
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
     help=f'Path to Firebase service account key JSON file. Can also be set via {SERVICE_ACCOUNT_KEY_ENV_VAR} env var.'
 )
 @click.option(
-    '--topic', 
-    type=str, 
-    required=True, 
-    help='The topic for the article to be generated.'
+    '--topic',
+    type=str,
+    required=False, # Changed from True
+    default=None,   # Explicitly set default to None
+    help='The topic for the article to be generated. If not provided, a random topic will be generated.'
 )
 @click.option(
-    '--level-order', 
-    type=click.IntRange(min=1), 
-    required=True, 
+    '--level-order',
+    type=click.IntRange(min=1),
+    required=True,
     help='The target reading level order (e.g., 1, 2, 3) to map to a levelId from the "levels" collection.'
 )
 @click.option(
-    '--provider', 
-    type=click.Choice(['openai', 'gemini', 'lmstudio', 'ollama'], case_sensitive=False), 
-    required=True, 
-    help='The LLM provider to use for article generation.'
+    '--provider',
+    type=click.Choice(['openai', 'gemini', 'lmstudio', 'ollama'], case_sensitive=False),
+    required=False,
+    default='gemini',
+    help='The LLM provider to use for article generation. Defaults to gemini.'
 )
 @click.option(
-    '--model', 
+    '--model',
     'model_name_option', # Use a different internal name to avoid conflict with 'model' in LLM calls
-    type=str, 
+    type=str,
     help='(Optional) Specific model name for the chosen LLM provider (e.g., "gpt-4", "gemini-1.5-pro-latest").'
 )
 @click.option(
-    '--llm-api-key', 
+    '--llm-api-key',
     'llm_api_key_option',
-    type=str, 
+    type=str,
     # Attempt to read from common env vars if not provided. Click doesn't directly support multiple envvars for one option.
     # We will handle os.environ.get() inside _generate_article_from_llm
     help='API key for the LLM provider (OpenAI, Gemini). If not set, checks OPENAI_API_KEY or GOOGLE_API_KEY env vars.'
 )
 @click.option(
-    '--llm-base-url', 
+    '--llm-base-url',
     'llm_base_url_option',
-    type=str, 
+    type=str,
     help='(Optional) Base URL for local LLM providers like LMStudio (e.g. http://localhost:1234/v1) or Ollama with OpenAI compatibility.'
 )
 def generate_article(key_path, topic, level_order, provider, model_name_option, llm_api_key_option, llm_base_url_option):
@@ -354,9 +380,26 @@ def generate_article(key_path, topic, level_order, provider, model_name_option, 
     level_id, level_name_english = _get_level_details(firestore_db, level_order)
     if not level_id:
         # Error message already printed by _get_level_details
-        exit(1) 
+        exit(1)
 
-    # 3. Generate Article Content using LLM
+    # 3. Handle Topic (Provided or Generated)
+    if topic is None:
+        click.echo(click.style("\nNo topic provided. Attempting to generate a random topic...", fg="cyan"))
+        generated_topic = _generate_random_topic_with_llm(
+            provider=provider, # Use the same provider specified for article generation
+            model_name_option=model_name_option,
+            llm_api_key_option=llm_api_key_option,
+            llm_base_url_option=llm_base_url_option
+        )
+        if not generated_topic:
+            click.echo(click.style("Failed to generate a random topic. Exiting.", fg="red"), err=True)
+            exit(1)
+        topic = generated_topic # Assign the generated topic
+        click.echo(click.style(f"Successfully generated topic: \"{topic}\"", fg="green"))
+    else:
+        click.echo(click.style(f"\\nUsing provided topic: \"{topic}\"", fg="cyan"))
+
+    # 4. Generate Article Content using LLM
     llm_generated_data = _generate_article_from_llm(
         provider=provider,
         model_name_option=model_name_option,
@@ -370,11 +413,47 @@ def generate_article(key_path, topic, level_order, provider, model_name_option, 
         click.echo("Failed to generate article content from LLM. Aborting.", err=True)
         exit(1)
 
-    # 4. Prepare data for Firestore, using the LLM's output
+    # 5. Prepare data for Firestore, using the LLM's output
     click.echo("\nPreparing article data for Firestore...")
     article_title = llm_generated_data.get("title", f"Untitled Article on {topic}")
     article_content = llm_generated_data.get("content", f"Content for {topic} is missing.")
     article_tags_from_llm = llm_generated_data.get("tags", [])
+
+    # Process comprehension questions (now expecting multiple-choice structure)
+    llm_comprehension_questions_raw = llm_generated_data.get("comprehension_questions", None)
+    has_questions = False
+    # processed_llm_questions will store the list of dicts conforming to ComprehensionQuestionItem
+    # after Pydantic validation (which happens in _generate_article_from_llm) and further validation here.
+    processed_llm_questions = []
+
+    if llm_comprehension_questions_raw and isinstance(llm_comprehension_questions_raw, list):
+        # llm_comprehension_questions_raw should be a list of dicts if Pydantic validation passed.
+        # Each dict should conform to ComprehensionQuestionItem's structure.
+        valid_questions_for_firestore = []
+        for q_data in llm_comprehension_questions_raw: # q_data is a dict from the LLM (e.g. from ComprehensionQuestionItem.model_dump())
+            if not (isinstance(q_data, dict) and 
+                    q_data.get("question") and 
+                    isinstance(q_data.get("choices"), list) and 
+                    q_data.get("correct_choice_id")):
+                click.echo(click.style(f"  Warning: Skipping malformed question data from LLM: {q_data}", fg="yellow"), err=True)
+                continue
+
+            choice_ids = [choice.get('id') for choice in q_data.get('choices', []) if isinstance(choice, dict) and choice.get('id')]
+            if q_data.get('correct_choice_id') in choice_ids:
+                valid_questions_for_firestore.append(q_data)
+            else:
+                click.echo(click.style(f"  Warning: Question \"{q_data.get('question', 'Unknown Question')}\" has a correct_choice_id \"{q_data.get('correct_choice_id')}\" not found in its choices. Skipping this question.", fg="yellow"), err=True)
+        
+        processed_llm_questions = valid_questions_for_firestore
+        if processed_llm_questions:
+            has_questions = True
+            click.echo(f"  Successfully processed {len(processed_llm_questions)} multiple-choice comprehension questions from LLM output.")
+        elif llm_comprehension_questions_raw: # LLM provided questions, but none were valid after our checks
+             click.echo("  Comprehension questions field was present in LLM output, but no questions remained after validation (e.g., correct_choice_id mismatch or malformed data).")
+        # If llm_comprehension_questions_raw was empty list initially, no special message here.
+    elif llm_comprehension_questions_raw is not None: # It was present but not a list as expected
+        click.echo(click.style(f"  Warning: 'comprehension_questions' field from LLM was not a list as expected. Received: {llm_comprehension_questions_raw}", fg="yellow"), err=True)
+    # If llm_comprehension_questions_raw was None, nothing is printed here.
 
     # Validate and clean tags
     if not isinstance(article_tags_from_llm, list) or not all(isinstance(tag, str) for tag in article_tags_from_llm):
@@ -382,7 +461,7 @@ def generate_article(key_path, topic, level_order, provider, model_name_option, 
         processed_tags = [topic.lower().replace(" ", "-")]
     else:
         processed_tags = [tag.strip().lower() for tag in article_tags_from_llm if tag.strip()]
-    
+
     # Add provider and model info to tags for traceability
     processed_tags.append(f"llm-provider:{provider.lower()}")
     if model_name_option:
@@ -398,21 +477,59 @@ def generate_article(key_path, topic, level_order, provider, model_name_option, 
         'updatedAt': firestore.SERVER_TIMESTAMP,  # Corrected
         'scrapedAt': firestore.SERVER_TIMESTAMP, # Corrected (for "content generated at")
         'sourceUrl': f"llm_generated/{provider.lower()}/topic_{topic.lower().replace(' ', '_').replace('/', '_')}", # Basic slug
-        'hasComprehensionQuestions': False, # Default, can be updated later if questions are generated
+        'hasComprehensionQuestions': has_questions, # This field remains in the main article doc
+        # The 'comprehensionQuestions' list is REMOVED from the main article document
     }
+
     click.echo(f"  Title: {firestore_article_data['title']}")
     click.echo(f"  Tags: {firestore_article_data['tags']}")
+    if has_questions:
+        click.echo(f"  Multiple-Choice Questions to be saved in subcollection: {len(processed_llm_questions)} found.")
+    else:
+        click.echo("  No valid multiple-choice questions generated or processed to be saved.")
     # click.echo(f"  Content Preview: {firestore_article_data['content'][:100]}...") # Optional preview
 
-    # 5. Add to Firestore
+    # 6. Add to Firestore
     try:
         article_collection_ref = firestore_db.collection('articles')
-        # add() returns a tuple (timestamp, DocumentReference)
-        _timestamp, new_doc_ref = article_collection_ref.add(firestore_article_data)
+        _timestamp, new_doc_ref = article_collection_ref.add(firestore_article_data) # new_doc_ref is the DocumentReference
         article_firestore_id = new_doc_ref.id
         click.echo(f"\nArticle '{firestore_article_data['title']}' added successfully to 'articles' collection with ID: {article_firestore_id}.")
+
+        # If questions were generated, add them to a 'questions' subcollection
+        if has_questions and processed_llm_questions:
+            questions_subcollection_ref = new_doc_ref.collection('questions')
+            click.echo(f"  Adding {len(processed_llm_questions)} multiple-choice questions to 'questions' subcollection for article ID {article_firestore_id}...")
+            for idx, q_data in enumerate(processed_llm_questions): # q_data is a dict from LLM (validated by Pydantic and here)
+                
+                # Transform LLM choice structure to Firestore choice structure
+                firestore_choices = []
+                for choice_item_data in q_data.get("choices", []): # choice_item_data is a dict like ChoiceItem
+                    firestore_choices.append({
+                        "id": choice_item_data.get("id", f"unknown_choice_{idx}_{firestore_choices.count}"), # e.g., "A"
+                        "textEnglish": choice_item_data.get("text", "N/A"),
+                        "textTraditionalChinese": "" # Placeholder
+                    })
+
+                question_document_data = {
+                    "_id": f"mcq{idx + 1}", # Custom ID for multiple choice questions
+                    "questionTextEnglish": q_data.get("question", "N/A"),
+                    "questionTextTraditionalChinese": "",  # Placeholder
+                    "choices": firestore_choices, # Array of choice objects for Firestore
+                    "correctAnswer": {"choiceId": q_data.get("correct_choice_id")}, # References ID from choices
+                    "explanationEnglish": "Multiple-choice question and answer options generated by LLM.", # Placeholder
+                    "explanationTraditionalChinese": "", # Placeholder
+                    "order": idx + 1,
+                    "points": 10,  # Default points for MCQ
+                    "questionType": "multiple_choice", # Explicitly set
+                }
+                q_doc_timestamp, q_doc_ref_actual = questions_subcollection_ref.add(question_document_data)
+                click.echo(f"    Added MCQ {idx + 1} ('_id': \"mcq{idx+1}\") with Firestore ID: {q_doc_ref_actual.id}")
+            click.echo(f"  Successfully added {len(processed_llm_questions)} multiple-choice questions to the subcollection.")
+
     except Exception as e:
-        click.echo(f"Error adding article to Firestore: {e}", err=True)
+        click.echo(f"Error adding article or questions to Firestore: {e}", err=True)
+        # Consider more sophisticated error handling if article is created but questions fail.
         exit(1)
 
 if __name__ == '__main__':
