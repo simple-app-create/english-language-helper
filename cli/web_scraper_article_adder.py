@@ -1,12 +1,11 @@
-import click
-from firebase_admin import firestore # For firestore.FieldValue
-from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR
-# import requests # Potential library for fetching web content
-# from bs4 import BeautifulSoup # Potential library for parsing HTML
+"""Web scraper CLI tool for adding articles to Firestore."""
 
-# SERVICE_ACCOUNT_KEY_ENV_VAR is now imported from firestore_utils
-# Global db client is managed within get_firestore_client or passed via ctx.obj (if this were a group command)
-# Local get_firestore_client function is removed
+from typing import Optional, Any
+
+import click
+from firebase_admin import firestore
+
+from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR
 
 
 @click.command()
@@ -20,7 +19,6 @@ from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR
     'url',
     type=str,
     required=True,
-    help='The URL of the article to scrape.'
 )
 @click.option(
     '--level',
@@ -28,17 +26,25 @@ from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR
     required=True,
     help='The target reading level (1-18) for the article. Automatic detection can be added later.'
 )
-# Add more options as needed (e.g., tags, force overwrite)
-def add_scraped_article(key_path, url, level):
-    """
-    Scrapes content from a given URL, and adds it as a new article
-    to the 'articles' collection in Firestore.
+def add_scraped_article(key_path: Optional[str], url: str, level: int) -> None:
+    """Scrape content from a URL and add it as a new article to Firestore.
+    
+    Args:
+        key_path: Path to Firebase service account key JSON file
+        url: URL of the article to scrape
+        level: Target reading level (1-18) for the article
+        
+    Returns:
+        None
+        
+    Raises:
+        SystemExit: If Firestore initialization fails or scraping fails
     """
     # 1. Initialize Firestore client using the utility function
     firestore_db = get_firestore_client(key_path)
     if firestore_db is None:
         click.echo("Failed to initialize Firestore client. Aborting.", err=True)
-        exit(1) # Exit if Firestore initialization failed
+        exit(1)
 
     click.echo(f"Attempting to scrape article from: {url}")
 
@@ -48,7 +54,7 @@ def add_scraped_article(key_path, url, level):
     #    - Handle potential errors (network issues, 404, etc.).
     #    - Add headers if necessary to mimic a browser.
 
-    html_content = "" # Placeholder for fetched HTML
+    html_content = ""  # Placeholder for fetched HTML
 
     # 3. Parse the HTML and extract article data
     #    - Use a library like `BeautifulSoup` to parse the HTML tree.
@@ -57,62 +63,86 @@ def add_scraped_article(key_path, url, level):
     #    - This requires specific parsing logic for the target website(s).
     #    - Consider using libraries like `trafilatura` or `goose3` for general article extraction.
 
-    scraped_title = "Scraped Article Title (Placeholder)" # Replace with actual scraped title
-    scraped_content = f"This is placeholder content scraped from {url}.\\n\\nDetails: Target Level - {level}".format(url=url, level=level) # Replace with actual scraped content
-    scraped_tags = [] # Replace with actual scraped tags or derived tags
+    scraped_title = "Scraped Article Title (Placeholder)"
+    scraped_content = f"This is placeholder content scraped from {url}.\n\nDetails: Target Level - {level}"
+    scraped_tags: list[str] = []
 
     if not scraped_content:
         click.echo("Could not scrape article content. Aborting.")
-        exit(1) # Or handle retry logic
+        exit(1)
 
     click.echo("Article content scraped (placeholder).")
 
     # --- Preview Content ---
-    click.echo("\\n--- Preview ---")
-    click.echo(f"Title: {scraped_title}")
-    click.echo("Content:")
-    # Display only the first N characters or lines for preview if content is long
-    preview_length = 500 # Display first 500 characters
-    display_content = scraped_content[:preview_length] + ('...' if len(scraped_content) > preview_length else '')
-    click.echo(display_content)
-    click.echo("--- End Preview ---\\n")
+    _preview_content(scraped_title, scraped_content)
 
     # --- Confirmation Step ---
     if not click.confirm('Do you want to add this article to Firestore?'):
         click.echo("Article not added to Firestore.")
-        return # Exit the command if user does not confirm
+        return
 
-    # --- Prepare Article Data ---
-    # 4. Prepare the data structure for Firestore
-    #    - Generate a unique article ID (e.g., using UUID or a Firestore auto-ID)
-    #    - Include scraped_title, scraped_content, level, tags, publishedAt (server timestamp)
-    #    - Add fields like \'source\': \'web_scraper\' and \'sourceUrl\': url
+    # --- Add to Firestore ---
+    _add_to_firestore(firestore_db, scraped_title, scraped_content, scraped_tags, level, url)
 
-    # Using Firestore auto-ID for simplicity in skeleton
-    doc_ref = firestore_db.collection('articles').document() # Creates a document reference with an auto-ID
-    article_id = doc_ref.id # Get the generated ID
+
+def _preview_content(title: str, content: str) -> None:
+    """Display a preview of the scraped content.
+    
+    Args:
+        title: Article title
+        content: Article content
+        
+    Returns:
+        None
+    """
+    click.echo("\n--- Preview ---")
+    click.echo(f"Title: {title}")
+    click.echo("Content:")
+    
+    preview_length = 500
+    display_content = content[:preview_length] + ('...' if len(content) > preview_length else '')
+    click.echo(display_content)
+    click.echo("--- End Preview ---\n")
+
+
+def _add_to_firestore(db: Any, title: str, content: str, 
+                     tags: list[str], level: int, url: str) -> None:
+    """Add the scraped article to Firestore.
+    
+    Args:
+        db: Initialized Firestore client
+        title: Article title
+        content: Article content
+        tags: List of article tags
+        level: Reading level
+        url: Source URL
+        
+    Returns:
+        None
+        
+    Raises:
+        SystemExit: If Firestore write operation fails
+    """
+    doc_ref = db.collection('articles').document()
+    article_id = doc_ref.id
 
     article_data = {
-        'title': scraped_title,
-        'content': scraped_content,
-        'level': level, # Using the provided level for now
-        'tags': scraped_tags,
-        'publishedAt': firestore.SERVER_TIMESTAMP, # Use server timestamp
+        'title': title,
+        'content': content,
+        'level': level,
+        'tags': tags,
+        'publishedAt': firestore.SERVER_TIMESTAMP,
         'source': 'web_scraper',
         'sourceUrl': url
     }
 
-    # --- Add to Firestore ---
-    # 5. Add the prepared data to the \'articles\' collection
     try:
         doc_ref.set(article_data)
-        click.echo(f"Article \'{scraped_title}\' added successfully with ID \'{article_id}\'.")
+        click.echo(f"Article '{title}' added successfully with ID '{article_id}'.")
     except Exception as e:
-        click.echo(f"Error adding article to Firestore: {e}")
-        # Do not exit(1) here, just report the error if the user confirmed but save failed
-        # exit(1)
+        click.echo(f"Error adding article to Firestore: {e}", err=True)
+        exit(1)
 
 
-# This allows the command to be run directly or imported into a main CLI group
 if __name__ == '__main__':
     add_scraped_article()

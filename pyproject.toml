@@ -15,3 +15,39 @@ dependencies = [
     "google-generativeai>=0.5.0", # Added for Google Gemini API
     "pydantic>=2.0.0", # Added for data validation
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.1.0",
+    "ruff-lsp>=0.0.62",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "notebooks",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

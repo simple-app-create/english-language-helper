@@ -1,18 +1,19 @@
-import click
-from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR
-from firebase_admin import firestore
+"""LLM-powered article generation CLI tool for English Language Helper."""
+
 import json
-import os # For API key env vars potentially
-from openai import OpenAI, APIConnectionError, RateLimitError, APIStatusError # For specific exceptions
-from openai.types.chat import ChatCompletionMessageParam # Import for explicit typing
+import os
+from typing import Any, List, Optional, Union
 
-# Pydantic for LLM output validation
-from pydantic import BaseModel, ValidationError, Field
-from typing import List, Annotated # For type hinting if needed
-
-# Add specific imports for Gemini
+import click
+from firebase_admin import firestore
 import google.generativeai as genai
-from google.api_core import exceptions as google_exceptions # For more specific error handling
+from google.api_core import exceptions as google_exceptions
+from openai import OpenAI, APIConnectionError, RateLimitError, APIStatusError
+from openai.types.chat import ChatCompletionMessageParam
+from pydantic import BaseModel, ValidationError, Field
+from typing import Annotated
+
+from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR
 
 # --- Pydantic Model for LLM Output Validation ---
 class ChoiceItem(BaseModel):
@@ -21,7 +22,7 @@ class ChoiceItem(BaseModel):
 
 class ComprehensionQuestionItem(BaseModel):
     question: Annotated[str, Field(min_length=1)]
-    choices: Annotated[List[ChoiceItem], Field(min_items=2, max_items=4)] # 2-4 choices per question
+    choices: Annotated[List[ChoiceItem], Field(min_length=2, max_length=4)] # 2-4 choices per question
     correct_choice_id: Annotated[str, Field(min_length=1)] # Must match an id in its 'choices'
 
 class LLMArticleOutput(BaseModel):
@@ -29,14 +30,16 @@ class LLMArticleOutput(BaseModel):
     content: Annotated[str, Field(min_length=1)] # Content must not be empty
     # Tags can be an empty list, but if tags exist, they must be non-empty strings.
     tags: Annotated[List[Annotated[str, Field(min_length=1)]], Field(min_length=0)]
-    comprehension_questions: Annotated[List[ComprehensionQuestionItem], Field(min_items=0, max_items=5)] | None = None # Optional, 0-5 questions
+    comprehension_questions: Union[Annotated[List[ComprehensionQuestionItem], Field(min_length=0, max_length=5)], None] = None # Optional, 0-5 questions
 
 # --- LLM Configuration & System Prompt ---
 LLM_SYSTEM_PROMPT = """\
 You are an expert content creator and linguist specializing in crafting clear, engaging, and educational articles for English language learners. Your goal is to generate an article based on a given topic and target reading level.
 
 **Instructions:**
-1.  **Target Audience:** The article is for English language learners at the specified reading level. Use vocabulary, sentence structures, and concepts appropriate for this level.
+1.  **Target Audience:** The article is for Taiwanese students who are studying English language art at the specified reading level.
+      The reading levels are based in Taiwan Education System, while complemented with English standards in the United States.
+      Use vocabulary, sentence structures, and concepts appropriate for this level.
 2.  **Content:** The article should be informative, well-structured, and factually accurate. It needs an introduction, body, and conclusion.
 3.  **Output Format:** YOU MUST PROVIDE YOUR RESPONSE STRICTLY AS A VALID JSON OBJECT with the following keys:
     *   `\"title\"` (string): A concise and engaging title for the article.
@@ -80,17 +83,33 @@ Example of bad output: Here is a topic for you: The Symbolism of Colors in Shake
 # --- Unified LLM Request Function ---
 def _perform_llm_request(
     provider: str,
-    model_name_option: str | None,
-    llm_api_key_option: str | None,
-    llm_base_url_option: str | None,
+    model_name_option: Optional[str],
+    llm_api_key_option: Optional[str],
+    llm_base_url_option: Optional[str],
     system_prompt: str,
     user_prompt: str,
     temperature: float,
     request_json_response: bool
-) -> str | None:
-    """
-    Core function to interact with the specified LLM provider.
-    Returns the raw text response from the LLM or None if an error occurs.
+) -> Optional[str]:
+    """Core function to interact with the specified LLM provider.
+    
+    Args:
+        provider: LLM provider name ('openai', 'gemini', 'lmstudio', 'ollama')
+        model_name_option: Specific model name to use
+        llm_api_key_option: API key for the LLM provider
+        llm_base_url_option: Base URL for local LLM providers
+        system_prompt: System instruction for the LLM
+        user_prompt: User query to send to the LLM
+        temperature: Sampling temperature for response generation
+        request_json_response: Whether to request JSON formatted response
+        
+    Returns:
+        Raw text response from the LLM or None if an error occurs
+        
+    Raises:
+        ImportError: If required SDK is not installed
+        APIConnectionError: If connection to LLM API fails
+        RateLimitError: If API rate limit is exceeded
     """
     click.echo(click.style(f"  Preparing LLM request for {provider.upper()}...", fg="blue"))
     llm_response_text: str | None = None
@@ -110,7 +129,7 @@ def _perform_llm_request(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
-            response_format_arg = {"type": "json_object"} if request_json_response else None
+            response_format_arg = {"type": "json_object"} if request_json_response else None  # type: ignore
 
             response = client.chat.completions.create(
                 model=effective_model,
@@ -172,7 +191,7 @@ def _perform_llm_request(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
-            response_format_arg = {"type": "json_object"} if request_json_response else None
+            response_format_arg = {"type": "json_object"} if request_json_response else None  # type: ignore
 
             response = client.chat.completions.create(
                 model=effective_model,
@@ -220,10 +239,30 @@ def _perform_llm_request(
         return None
 
 # --- Core LLM Generation Logic ---
-def _generate_article_from_llm(provider, model_name_option, llm_api_key_option, llm_base_url_option, topic, level_name_for_prompt):
-    """
-    Generates article content (title, content, tags) using the specified LLM provider.
-    Returns a dictionary like {"title": ..., "content": ..., "tags": ...} or None if generation fails.
+def _generate_article_from_llm(
+    provider: str, 
+    model_name_option: Optional[str], 
+    llm_api_key_option: Optional[str], 
+    llm_base_url_option: Optional[str], 
+    topic: str, 
+    level_name_for_prompt: str
+) -> Optional[dict[str, Any]]:
+    """Generate article content using the specified LLM provider.
+    
+    Args:
+        provider: LLM provider name
+        model_name_option: Specific model name to use
+        llm_api_key_option: API key for the LLM provider
+        llm_base_url_option: Base URL for local LLM providers
+        topic: Topic for article generation
+        level_name_for_prompt: Reading level name for context
+        
+    Returns:
+        Dictionary with title, content, tags, and questions or None if generation fails
+        
+    Raises:
+        ValidationError: If LLM response doesn't match expected schema
+        json.JSONDecodeError: If LLM response is not valid JSON
     """
     click.echo(f"\nAttempting to generate article using {provider.upper()} for topic '{topic}' at level '{level_name_for_prompt}'.")
     user_prompt = f"Generate an article on the topic '{topic}' for the '{level_name_for_prompt}' reading level."
@@ -261,8 +300,19 @@ def _generate_article_from_llm(provider, model_name_option, llm_api_key_option, 
         return None
 
 # --- Firestore Helper ---
-def _get_level_details(firestore_db, level_order_num):
-    """Fetches levelId and nameEnglish from Firestore based on level_order."""
+def _get_level_details(firestore_db: Any, level_order_num: int) -> tuple[Optional[str], Optional[str]]:
+    """Fetch levelId and nameEnglish from Firestore based on level_order.
+    
+    Args:
+        firestore_db: Initialized Firestore client
+        level_order_num: Level order number to query
+        
+    Returns:
+        Tuple of (level_id, level_name_english) or (None, None) if not found
+        
+    Raises:
+        Exception: If Firestore query fails
+    """
     if not firestore_db: return None, None # Should not happen if pre-checked
     try:
         levels_query = firestore_db.collection('levels').where('order', '==', level_order_num).limit(1)
@@ -280,10 +330,25 @@ def _get_level_details(firestore_db, level_order_num):
         click.echo(f"Error querying 'levels' collection: {e}", err=True)
         return None, None
 
-def _generate_random_topic_with_llm(provider, model_name_option, llm_api_key_option, llm_base_url_option):
-    """
-    Generates a random topic string using the specified LLM provider.
-    Returns the topic string or None if generation fails.
+def _generate_random_topic_with_llm(
+    provider: str, 
+    model_name_option: Optional[str], 
+    llm_api_key_option: Optional[str], 
+    llm_base_url_option: Optional[str]
+) -> Optional[str]:
+    """Generate a random topic string using the specified LLM provider.
+    
+    Args:
+        provider: LLM provider name
+        model_name_option: Specific model name to use
+        llm_api_key_option: API key for the LLM provider
+        llm_base_url_option: Base URL for local LLM providers
+        
+    Returns:
+        Generated topic string or None if generation fails
+        
+    Raises:
+        Exception: If topic generation or cleaning fails
     """
     click.echo(click.style(f"\nAttempting to generate a random topic using {provider.upper()}...", fg="cyan"))
     user_prompt = "Generate a random topic suitable for English Language art students, focusing on language, literature, or art."
@@ -365,10 +430,31 @@ def _generate_random_topic_with_llm(provider, model_name_option, llm_api_key_opt
     type=str,
     help='(Optional) Base URL for local LLM providers like LMStudio (e.g. http://localhost:1234/v1) or Ollama with OpenAI compatibility.'
 )
-def generate_article(key_path, topic, level_order, provider, model_name_option, llm_api_key_option, llm_base_url_option):
-    """
-    Generates a new article using a specified LLM based on topic and level order,
-    then adds it to the 'articles' collection in Firestore.
+def generate_article(
+    key_path: Optional[str], 
+    topic: Optional[str], 
+    level_order: int, 
+    provider: str, 
+    model_name_option: Optional[str], 
+    llm_api_key_option: Optional[str], 
+    llm_base_url_option: Optional[str]
+) -> None:
+    """Generate a new article using LLM and add it to Firestore.
+    
+    Args:
+        key_path: Path to Firebase service account key
+        topic: Article topic (if None, generates random topic)
+        level_order: Target reading level order number
+        provider: LLM provider to use
+        model_name_option: Specific model name
+        llm_api_key_option: API key for LLM provider
+        llm_base_url_option: Base URL for local LLM providers
+        
+    Returns:
+        None
+        
+    Raises:
+        SystemExit: If Firestore initialization, level lookup, or article generation fails
     """
     # 1. Initialize Firestore Client
     firestore_db = get_firestore_client(key_path)
@@ -378,7 +464,7 @@ def generate_article(key_path, topic, level_order, provider, model_name_option, 
 
     # 2. Get Level Details from Firestore
     level_id, level_name_english = _get_level_details(firestore_db, level_order)
-    if not level_id:
+    if not level_id or not level_name_english:
         # Error message already printed by _get_level_details
         exit(1)
 
@@ -406,7 +492,7 @@ def generate_article(key_path, topic, level_order, provider, model_name_option, 
         llm_api_key_option=llm_api_key_option,
         llm_base_url_option=llm_base_url_option,
         topic=topic,
-        level_name_for_prompt=level_name_english
+        level_name_for_prompt=level_name_english or f"Level {level_order}"
     )
 
     if llm_generated_data is None:

@@ -1,8 +1,11 @@
+"""Listening activity CLI tool for adding audio-based activities to Firestore."""
+
+from typing import Optional, Any
+
 import click
-from firebase_admin import firestore # For firestore.FieldValue
+from firebase_admin import firestore
+
 from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR
-# Removed os, firebase_admin, credentials imports as they are handled by firestore_utils
-# Removed local SERVICE_ACCOUNT_KEY_ENV_VAR, db global, and get_firestore_client function
 
 
 @click.command()
@@ -16,13 +19,11 @@ from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR
     'audio_url',
     type=str,
     required=True,
-    help='The URL of the audio file for the listening activity.'
 )
 @click.argument(
     'title',
     type=str,
     required=True,
-    help='The title of the listening activity.'
 )
 @click.option(
     '--level',
@@ -40,62 +41,114 @@ from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR
     type=str,
     help='Optional comma-separated tags for the listening activity (e.g., podcast, news).'
 )
-# Add more options as needed (e.g., duration, speakers)
-def add_listening_activity(key_path, audio_url, title, level, transcript_file, tags):
-    """
-    Adds a new listening activity to the \'activities\' collection in Firestore.
+def add_listening_activity(
+    key_path: Optional[str], 
+    audio_url: str, 
+    title: str, 
+    level: int, 
+    transcript_file: Optional[str], 
+    tags: Optional[str]
+) -> None:
+    """Add a new listening activity to the 'activities' collection in Firestore.
+    
+    Args:
+        key_path: Path to Firebase service account key JSON file
+        audio_url: URL of the audio file for the listening activity
+        title: Title of the listening activity
+        level: Target difficulty level (1-18) for the listening activity
+        transcript_file: Optional path to file containing audio transcript
+        tags: Optional comma-separated tags for the activity
+        
+    Returns:
+        None
+        
+    Raises:
+        SystemExit: If Firestore initialization fails or file operations fail
     """
     # 1. Initialize Firestore client
     firestore_db = get_firestore_client(key_path)
     if firestore_db is None:
         click.echo("Failed to initialize Firestore client. Aborting.", err=True)
-        exit(1) # Exit if Firestore initialization failed
+        exit(1)
 
-    click.echo(f"Adding listening activity: \'{title}\' from {audio_url} for level {level}...")
+    click.echo(f"Adding listening activity: '{title}' from {audio_url} for level {level}...")
 
-    # --- Read Transcript Content ---\n
-    transcript_content = ""
-    if transcript_file:
-        try:
-            with open(transcript_file, 'r', encoding='utf-8') as f:
-                transcript_content = f.read()
-            click.echo("Transcript file read successfully.")
-        except Exception as e:
-            click.echo(f"Error reading transcript file: {e}")
-            # Decide if you want to exit or continue without transcript
-            return # Exit the command on file read error
+    # --- Read Transcript Content ---
+    transcript_content = _read_transcript_file(transcript_file)
+    
+    # --- Add to Firestore ---
+    _add_activity_to_firestore(firestore_db, audio_url, title, level, transcript_content, tags)
 
-    # --- Prepare Activity Data ---\n
-    # 2. Prepare the data structure for Firestore
-    #    - Generate a unique activity ID (using a Firestore auto-ID)
-    #    - Include title, audio_url, level, transcript (if available), tags, publishedAt, activity_type
 
-    # Using Firestore auto-ID for simplicity in skeleton
-    # Storing listening activities in a separate 'activities' collection
-    doc_ref = firestore_db.collection('activities').document() # Creates a document reference with an auto-ID
-    activity_id = doc_ref.id # Get the generated ID
+def _read_transcript_file(transcript_file: Optional[str]) -> str:
+    """Read transcript content from file if provided.
+    
+    Args:
+        transcript_file: Optional path to transcript file
+        
+    Returns:
+        Transcript content as string (empty if no file provided)
+        
+    Raises:
+        SystemExit: If file reading fails
+    """
+    if not transcript_file:
+        return ""
+        
+    try:
+        with open(transcript_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        click.echo("Transcript file read successfully.")
+        return content
+    except Exception as e:
+        click.echo(f"Error reading transcript file: {e}", err=True)
+        exit(1)
+
+
+def _add_activity_to_firestore(
+    db: Any, 
+    audio_url: str, 
+    title: str, 
+    level: int, 
+    transcript_content: str, 
+    tags: Optional[str]
+) -> None:
+    """Add the listening activity data to Firestore.
+    
+    Args:
+        db: Initialized Firestore client
+        audio_url: URL of the audio file
+        title: Activity title
+        level: Difficulty level
+        transcript_content: Audio transcript text
+        tags: Comma-separated tags string
+        
+    Returns:
+        None
+        
+    Raises:
+        SystemExit: If Firestore write operation fails
+    """
+    doc_ref = db.collection('activities').document()
+    activity_id = doc_ref.id
 
     activity_data = {
-        'activity_type': 'listening', # Explicitly define the type
+        'activity_type': 'listening',
         'title': title,
         'audioUrl': audio_url,
         'level': level,
-        'transcript': transcript_content, # Store transcript (can be empty string)
-        'tags': [tag.strip() for tag in tags.split(',')] if tags else [], # Store tags as a list
-        'publishedAt': firestore.SERVER_TIMESTAMP, # Use server timestamp
-        # Add other fields like duration, speakers, etc. as needed
+        'transcript': transcript_content,
+        'tags': [tag.strip() for tag in tags.split(',')] if tags else [],
+        'publishedAt': firestore.SERVER_TIMESTAMP,
     }
 
-    # --- Add to Firestore ---\n
-    # 3. Add the prepared data to the \'activities\' collection
     try:
         doc_ref.set(activity_data)
-        click.echo(f"Listening activity \'{title}\' added successfully with ID \'{activity_id}\' in the \'activities\' collection.")
+        click.echo(f"Listening activity '{title}' added successfully with ID '{activity_id}' in the 'activities' collection.")
     except Exception as e:
-        click.echo(f"Error adding listening activity to Firestore: {e}")
-        exit(1) # Exit if Firestore write failed
+        click.echo(f"Error adding listening activity to Firestore: {e}", err=True)
+        exit(1)
 
 
-# This allows the command to be run directly or imported into a main CLI group
 if __name__ == '__main__':
     add_listening_activity()
