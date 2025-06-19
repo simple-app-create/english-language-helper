@@ -8,6 +8,9 @@ Write **concise but pythonic** code that is:
 - Clean and professional
 - Readable but tight
 - Efficient without sacrificing clarity
+- Reuse functions through importing from other modules if possible
+- Follow the DRY (Don't Repeat Yourself) principle
+- Group and Separate functions in modules in logical manner
 
 ## Python Style Preferences
 
@@ -30,6 +33,7 @@ for q in question_docs:
 
 ### 2. Concise Variable Names
 - Use **short but clear** names when context is obvious
+- Use **descriptive but concise** names when context is not obvious
 - `db` instead of `database_client`
 - `q` instead of `question_data` in tight loops
 - `ctx` instead of `context`
@@ -77,13 +81,13 @@ if db is None:
 # Good
 def get_article(art_id: str) -> dict[str, Any]:
     """Fetch article from database.
-    
+
     Args:
         art_id: Unique identifier of article
-        
+
     Returns:
         Article data as dictionary
-        
+
     Raises:
         NotFoundError: If article doesn't exist
     """
@@ -104,14 +108,14 @@ def get_article(art_id):
 ```python
 def process_text(text: str, max_len: int | None = None) -> list[str]:
     """Process and split text into sentences.
-    
+
     Args:
         text: Raw text to process
         max_len: Optional maximum length per sentence
-        
+
     Returns:
         List of processed sentences
-        
+
     Raises:
         ValueError: If text is empty
         MaxLengthError: If sentence exceeds max_len
@@ -181,10 +185,10 @@ def process_article_data(doc):
 ```python
 def process_article_data(doc: DocumentSnapshot) -> bool:
     """Process Firestore article document.
-    
+
     Args:
         doc: Firestore document snapshot
-        
+
     Returns:
         Whether article has comprehension questions
     """

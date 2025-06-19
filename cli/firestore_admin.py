@@ -1,6 +1,6 @@
 """CLI tool for managing English Language Helper data in Firestore."""
 
-from typing import Optional
+from typing import Optional, Any
 
 import click
 from firebase_admin import firestore
@@ -145,7 +145,7 @@ def add_article(ctx: click.Context, article_id: str, title: str,
         'sourceUrl': source_url,
         'sourceName': source_name,
         'content': "", # Default, updated if content_file is provided
-        'scrapedAt': firestore.SERVER_TIMESTAMP, # Assuming CLI adds "scraped" content
+        'scrapedAt': firestore.SERVER_TIMESTAMP,  # type: ignore # Assuming CLI adds "scraped" content
         'publicationDate': None, # Default, updated if publication_date_str is valid
         'levelIds': [level_id.strip() for level_id in level_ids.split(',') if level_id.strip()],
         'author': author,
@@ -154,8 +154,8 @@ def add_article(ctx: click.Context, article_id: str, title: str,
         'summaryTraditionalChinese': summary_traditional_chinese,
         'estimatedReadingTimeMinutes': estimated_reading_time, # click handles type or default None
         'hasComprehensionQuestions': has_comprehension_questions,
-        'createdAt': firestore.SERVER_TIMESTAMP,
-        'updatedAt': firestore.SERVER_TIMESTAMP
+        'createdAt': firestore.SERVER_TIMESTAMP,  # type: ignore
+        'updatedAt': firestore.SERVER_TIMESTAMP  # type: ignore
     }
 
     if content_file:
@@ -166,7 +166,7 @@ def add_article(ctx: click.Context, article_id: str, title: str,
             click.echo(f"Error reading content file: {e}", err=True)
             ctx.exit(1) # Exit if content file can't be read
     
-    article_data['publicationDate'] = parse_publication_date(publication_date_str)
+    article_data['publicationDate'] = parse_publication_date(publication_date_str) if publication_date_str else None
 
     # Ensure estimated_reading_time is an int or None, not 0 if not provided
     if estimated_reading_time is None:
@@ -182,7 +182,7 @@ def add_article(ctx: click.Context, article_id: str, title: str,
         click.echo(f"Article '{title}' (ID: '{article_id}') added/updated successfully.")
         click.echo("Data written:")
         for key, value in article_data.items():
-            if value == firestore.SERVER_TIMESTAMP:
+            if value == firestore.SERVER_TIMESTAMP:  # type: ignore
                 click.echo(f"  {key}: Server Timestamp (will be set by Firestore)")
             else:
                 click.echo(f"  {key}: {value}")
@@ -216,7 +216,7 @@ def list_article_questions(ctx: click.Context, article_id: str) -> None:
             click.echo(f"Article '{article_id}' not found.", err=True)
             ctx.exit(1)
         
-        click.echo(f"Article: {article_doc.get('title')}")
+        click.echo(f"Article: {article_doc.get('title') if article_doc else 'Unknown'}")
         click.echo("-" * 40)
         
         article_ref = db.collection('articles').document(article_id)
@@ -236,6 +236,192 @@ def list_article_questions(ctx: click.Context, article_id: str) -> None:
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         ctx.exit(1)
+
+def interactive_add_article(db: Any) -> None:
+    """Interactive mode for adding articles.
+    
+    Args:
+        db: Firestore database client
+        
+    Returns:
+        None
+    """
+    click.echo("\n=== Add Article ===")
+    
+    # Required fields
+    article_id = click.prompt("Article ID")
+    title = click.prompt("Title")
+    level_ids = click.prompt("Level IDs (comma-separated)")
+    
+    # Optional fields with defaults
+    content_file = click.prompt("Content file path (optional)", default="", show_default=False)
+    source_url = click.prompt("Source URL (optional)", default="", show_default=False)
+    source_name = click.prompt("Source name (optional)", default="", show_default=False)
+    author = click.prompt("Author (optional)", default="", show_default=False)
+    tags = click.prompt("Tags (comma-separated, optional)", default="", show_default=False)
+    summary_english = click.prompt("English summary (optional)", default="", show_default=False)
+    summary_traditional_chinese = click.prompt("Traditional Chinese summary (optional)", default="", show_default=False)
+    
+    publication_date_str = click.prompt("Publication date (YYYY-MM-DD, optional)", default="", show_default=False)
+    
+    estimated_reading_time = None
+    if click.confirm("Set estimated reading time?", default=False):
+        estimated_reading_time = click.prompt("Estimated reading time (minutes)", type=int)
+    
+    has_comprehension_questions = click.confirm("Has comprehension questions?", default=False)
+    
+    # Process the data similar to the command version
+    article_data = {
+        'title': title,
+        'sourceUrl': source_url,
+        'sourceName': source_name,
+        'content': "",
+        'scrapedAt': firestore.SERVER_TIMESTAMP,  # type: ignore
+        'publicationDate': None,
+        'levelIds': [level_id.strip() for level_id in level_ids.split(',') if level_id.strip()],
+        'author': author,
+        'tags': [tag.strip() for tag in tags.split(',') if tag.strip()] if tags else [],
+        'summaryEnglish': summary_english,
+        'summaryTraditionalChinese': summary_traditional_chinese,
+        'estimatedReadingTimeMinutes': estimated_reading_time,
+        'hasComprehensionQuestions': has_comprehension_questions,
+        'createdAt': firestore.SERVER_TIMESTAMP,  # type: ignore
+        'updatedAt': firestore.SERVER_TIMESTAMP  # type: ignore
+    }
+    
+    if content_file:
+        try:
+            with open(content_file, 'r', encoding='utf-8') as f:
+                article_data['content'] = f.read()
+                click.echo(f"✓ Content loaded from {content_file}")
+        except Exception as e:
+            click.echo(f"Error reading content file: {e}", err=True)
+            return
+    
+    article_data['publicationDate'] = parse_publication_date(publication_date_str) if publication_date_str else None
+    
+    try:
+        doc_ref = db.collection('articles').document(article_id)
+        doc_ref.set(article_data)
+        click.echo(f"\n✓ Article '{title}' (ID: '{article_id}') added successfully!")
+    except Exception as e:
+        click.echo(f"Error adding article: {e}", err=True)
+
+
+def interactive_list_questions(db: Any) -> None:
+    """Interactive mode for listing article questions.
+    
+    Args:
+        db: Firestore database client
+        
+    Returns:
+        None
+    """
+    click.echo("\n=== List Article Questions ===")
+    
+    article_id = click.prompt("Article ID")
+    
+    try:
+        exists, article_doc = check_article_exists(db, article_id)
+        
+        if not exists or not article_doc:
+            click.echo(f"Article '{article_id}' not found.", err=True)
+            return
+        
+        click.echo(f"\nArticle: {article_doc.get('title')}")
+        click.echo("-" * 50)
+        
+        article_ref = db.collection('articles').document(article_id)
+        questions = list(article_ref.collection('questions').stream())
+        
+        if not questions:
+            click.echo("No questions found for this article.")
+            return
+        
+        for i, q_doc in enumerate(questions, 1):
+            q = q_doc.to_dict()
+            click.echo(f"Q{i}: {q.get('questionTextEnglish')}")
+            
+            for choice in q.get('choices', []):
+                marker = " ✓" if choice['id'] == q.get('correctAnswer') else ""
+                click.echo(f"  {choice['id']}: {choice['text']}{marker}")
+            click.echo()
+        
+        click.echo(f"Total: {len(questions)} questions")
+            
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+
+
+def interactive_check_connection(db: Any) -> None:
+    """Interactive mode for checking database connection.
+    
+    Args:
+        db: Firestore database client
+        
+    Returns:
+        None
+    """
+    click.echo("\n=== Database Connection Test ===")
+    
+    try:
+        articles_ref = db.collection('articles')
+        docs = articles_ref.limit(1).stream()
+        docs_list = list(docs)
+        click.echo("✓ Successfully connected to Firestore!")
+        click.echo("✓ Database permissions are working correctly.")
+    except Exception as e:
+        click.echo(f"✗ Connection test failed: {e}", err=True)
+        click.echo("Please check your service account permissions.", err=True)
+
+
+@cli.command()
+@click.pass_context
+def interactive(ctx: click.Context) -> None:
+    """Start interactive mode with menu-driven interface.
+    
+    Args:
+        ctx: Click context containing Firestore client
+        
+    Returns:
+        None
+        
+    Raises:
+        SystemExit: If database client not available
+    """
+    db = ctx.obj
+    validate_db_client(db, ctx)
+    
+    click.echo("🔥 Firestore Admin - Interactive Mode")
+    click.echo("=" * 40)
+    
+    while True:
+        click.echo("\nAvailable Operations:")
+        click.echo("1. Add Article")
+        click.echo("2. List Article Questions")
+        click.echo("3. Check Database Connection")
+        click.echo("4. Exit")
+        
+        try:
+            choice = click.prompt("\nSelect an option", type=click.IntRange(1, 4))
+        except click.Abort:
+            click.echo("\nGoodbye!")
+            break
+        
+        if choice == 1:
+            interactive_add_article(db)
+        elif choice == 2:
+            interactive_list_questions(db)
+        elif choice == 3:
+            interactive_check_connection(db)
+        elif choice == 4:
+            click.echo("Goodbye!")
+            break
+        
+        if choice != 4:
+            click.echo("\nPress Enter to continue...")
+            click.getchar()
+
 
 if __name__ == '__main__':
     cli()
