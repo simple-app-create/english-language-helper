@@ -1,28 +1,37 @@
+"""Firestore utility functions for Firebase initialization and client management."""
+
+import datetime
+import os
+from typing import Optional, Any
+
 import click
 import firebase_admin
 from firebase_admin import credentials, firestore
-import os
-from typing import Optional # Import Optional
 
 # Define the name of the environment variable for the key path
 SERVICE_ACCOUNT_KEY_ENV_VAR = 'FIREBASE_SERVICE_ACCOUNT_KEY_PATH'
 
 # Global variable for the Firestore database client
 # This helps to reuse the initialized client within the same process/session
-_db_client: Optional[firestore.Client] = None # Explicitly type _db_client to allow None
+_db_client: Optional[Any] = None
 
-def get_firestore_client(key_path: str = None) -> Optional[firestore.Client]: # Add return type hint
-    """
-    Initializes Firebase Admin SDK if not already initialized and returns a Firestore client.
-    It reuses an existing client if one has already been initialized by this function.
 
+def get_firestore_client(key_path: Optional[str] = None) -> Optional[Any]:
+    """Initialize Firebase Admin SDK and return a Firestore client.
+    
+    Reuses an existing client if one has already been initialized by this function.
+    Handles Firebase app initialization and credential management.
+    
     Args:
-        key_path (str, optional): Path to the Firebase service account key JSON file.
-                                  If None, it tries to use the FIREBASE_SERVICE_ACCOUNT_KEY_PATH
-                                  environment variable.
-
+        key_path: Path to the Firebase service account key JSON file.
+                 If None, tries to use FIREBASE_SERVICE_ACCOUNT_KEY_PATH env var.
+                 
     Returns:
-        firestore.Client or None: An initialized Firestore client, or None if initialization fails.
+        Initialized Firestore client, or None if initialization fails.
+        
+    Raises:
+        ValueError: If the service account key file is invalid.
+        FileNotFoundError: If the key file path doesn't exist.
     """
     global _db_client
     if _db_client is not None:
@@ -52,15 +61,74 @@ def get_firestore_client(key_path: str = None) -> Optional[firestore.Client]: # 
         # and firestore.client() will use it.
         
         _db_client = firestore.client()
-        # click.echo("Firebase Admin SDK initialized successfully and Firestore client obtained.", err=True) # Optional debug
         return _db_client
-    except ValueError as ve: # Often indicates a problem with the key file itself
+    except ValueError as ve:  # Often indicates a problem with the key file itself
         click.echo(f"Error initializing Firebase with key file {effective_key_path}. "
                    f"Is it a valid JSON key file? Details: {ve}", err=True)
         return None
     except Exception as e:
         click.echo(f"An unexpected error occurred during Firebase initialization: {e}", err=True)
         return None
+
+
+def validate_db_client(db: Any, ctx: click.Context) -> None:
+    """Validate that database client exists and exit if not.
+    
+    Args:
+        db: Firestore database client to validate
+        ctx: Click context for exiting on error
+        
+    Returns:
+        None
+        
+    Raises:
+        SystemExit: If database client is None or invalid
+    """
+    if not db:
+        click.echo("Database client not found.", err=True)
+        ctx.exit(1)
+
+
+def parse_publication_date(date_str: str) -> Optional[str]:
+    """Parse and validate publication date string.
+    
+    Args:
+        date_str: Date string in YYYY-MM-DD format
+        
+    Returns:
+        Validated date string if valid, None if invalid
+        
+    Raises:
+        None - Invalid dates return None rather than raising
+    """
+    if not date_str:
+        return None
+        
+    try:
+        datetime.datetime.strptime(date_str, '%Y-%m-%d')
+        return date_str
+    except ValueError:
+        click.echo(f"Warning: Date '{date_str}' is not in YYYY-MM-DD format.", err=True)
+        return None
+
+
+def check_article_exists(db: Any, article_id: str) -> tuple[bool, Optional[Any]]:
+    """Check if article exists in Firestore.
+    
+    Args:
+        db: Firestore database client
+        article_id: Unique identifier of the article
+        
+    Returns:
+        Tuple of (exists: bool, document: Optional[DocumentSnapshot])
+        
+    Raises:
+        Exception: If Firestore query fails
+    """
+    article_ref = db.collection('articles').document(article_id)
+    article_doc = article_ref.get()
+    return article_doc.exists, article_doc if article_doc.exists else None
+
 
 if __name__ == '__main__':
     # Example usage (for testing this module directly)
@@ -72,7 +140,7 @@ if __name__ == '__main__':
     # For direct testing, you might want to provide a path if the env var isn't set globally
     # test_key_path = "/path/to/your/serviceAccountKey.json" 
     # client = get_firestore_client(key_path=test_key_path)
-    client = get_firestore_client() # Relies on env var for this simple test
+    client = get_firestore_client()  # Relies on env var for this simple test
     
     if client:
         print("Successfully obtained Firestore client.")

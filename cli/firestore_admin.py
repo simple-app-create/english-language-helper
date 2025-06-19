@@ -1,9 +1,10 @@
-import os
+"""CLI tool for managing English Language Helper data in Firestore."""
+
+from typing import Optional
+
 import click
-# firebase_admin and credentials will be handled by firestore_utils
-from firebase_admin import firestore # For firestore.FieldValue
-from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR
-import datetime # For potential date parsing
+from firebase_admin import firestore
+from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR, validate_db_client, parse_publication_date, check_article_exists
 
 # SERVICE_ACCOUNT_KEY_ENV_VAR is now imported from firestore_utils
 # Global db client is now managed within get_firestore_client or passed via ctx.obj
@@ -17,8 +18,19 @@ import datetime # For potential date parsing
     required=False, # get_firestore_client will handle if it's truly missing (from path or env var)
 )
 @click.pass_context
-def cli(ctx, key_path):
-    """A CLI tool to manage English Language Helper data in Firestore."""
+def cli(ctx: click.Context, key_path: Optional[str]) -> None:
+    """A CLI tool to manage English Language Helper data in Firestore.
+    
+    Args:
+        ctx: Click context object for passing data between commands
+        key_path: Path to Firebase service account key JSON file
+        
+    Returns:
+        None
+        
+    Raises:
+        SystemExit: If Firestore initialization fails
+    """
     # Firebase initialization is now handled by get_firestore_client
     firestore_client = get_firestore_client(key_path=key_path) 
     
@@ -31,23 +43,31 @@ def cli(ctx, key_path):
     # click.echo("Firebase Admin SDK initialized successfully via utils and client stored in context.", err=True) # Optional debug
 
 @cli.command()
-@click.pass_context # Ensure context is passed to access ctx.obj
-def check_db_connection(ctx):
-    """Checks if the database connection is working."""
+@click.pass_context
+def check_db_connection(ctx: click.Context) -> None:
+    """Check if the database connection is working.
+    
+    Args:
+        ctx: Click context containing Firestore client
+        
+    Returns:
+        None
+        
+    Raises:
+        SystemExit: If database connection test fails
+    """
     db = ctx.obj # Get client from context
-    if db:
-        try:
-            articles_ref = db.collection('articles') # Assuming 'articles' is a valid collection
-            # Use stream() for iterators and list() to consume and actually perform the read.
-            docs = articles_ref.limit(1).stream() 
-            list(docs) 
-            click.echo("Successfully connected to Firestore and can perform reads.")
-        except Exception as e:
-            click.echo(f"Connected to Firestore, but encountered an error performing a test read: {e}", err=True)
-            click.echo("Please ensure your service account has the necessary permissions (e.g., 'roles/datastore.user').", err=True)
-    else:
-        # This case should ideally be caught by the cli group init if ctx.obj is None
-        click.echo("Database client not found in context. Ensure Firebase initialization succeeded in the main CLI group.", err=True)
+    validate_db_client(db, ctx)
+    
+    try:
+        articles_ref = db.collection('articles') # Assuming 'articles' is a valid collection
+        # Use stream() for iterators and list() to consume and actually perform the read.
+        docs = articles_ref.limit(1).stream() 
+        list(docs) 
+        click.echo("Successfully connected to Firestore and can perform reads.")
+    except Exception as e:
+        click.echo(f"Connected to Firestore, but encountered an error performing a test read: {e}", err=True)
+        click.echo("Please ensure your service account has the necessary permissions (e.g., 'roles/datastore.user').", err=True)
 
 @cli.command()
 @click.argument('article_id')
@@ -85,17 +105,39 @@ def check_db_connection(ctx):
     default=False,
     help='Set this flag if the article has comprehension questions.'
 )
-@click.pass_context # Ensure context is passed
-def add_article(ctx, article_id, title, content_file, level_ids,
-                source_url, source_name, publication_date_str, author,
-                tags, summary_english, summary_traditional_chinese,
-                estimated_reading_time, has_comprehension_questions):
-    """Adds or updates a reading article in the 'articles' collection using the defined schema."""
+@click.pass_context
+def add_article(ctx: click.Context, article_id: str, title: str, 
+                content_file: Optional[str], level_ids: str,
+                source_url: str, source_name: str, publication_date_str: Optional[str], 
+                author: str, tags: Optional[str], summary_english: str, 
+                summary_traditional_chinese: str, estimated_reading_time: Optional[int],
+                has_comprehension_questions: bool) -> None:
+    """Add or update a reading article in the 'articles' collection.
+    
+    Args:
+        ctx: Click context containing Firestore client
+        article_id: Unique identifier for the article
+        title: Article title
+        content_file: Path to file containing article content
+        level_ids: Comma-separated string of level IDs
+        source_url: Original URL of the article
+        source_name: Name of the website or publication
+        publication_date_str: Publication date as YYYY-MM-DD string
+        author: Article author
+        tags: Comma-separated tags for the article
+        summary_english: Brief English summary
+        summary_traditional_chinese: Brief Traditional Chinese summary
+        estimated_reading_time: Estimated reading time in minutes
+        has_comprehension_questions: Whether article has comprehension questions
+        
+    Returns:
+        None
+        
+    Raises:
+        SystemExit: If article creation fails
+    """
     db = ctx.obj # Get client from context
-    if db is None:
-        click.echo("Database client not found in context. Cannot add article.", err=True)
-        # This state should ideally be prevented by the main cli group failing first.
-        ctx.exit(1)
+    validate_db_client(db, ctx)
 
     # Initialize article_data with all fields from the schema
     article_data = {
@@ -124,15 +166,7 @@ def add_article(ctx, article_id, title, content_file, level_ids,
             click.echo(f"Error reading content file: {e}", err=True)
             ctx.exit(1) # Exit if content file can't be read
     
-    if publication_date_str:
-        try:
-            # Validate format, then store as string.
-            # If you need a Firestore Timestamp, parse to datetime and handle timezones.
-            datetime.datetime.strptime(publication_date_str, '%Y-%m-%d')
-            article_data['publicationDate'] = publication_date_str
-        except ValueError:
-            click.echo(f"Warning: --publication-date-str '{publication_date_str}' is not in YYYY-MM-DD format. 'publicationDate' field will be None.", err=True) # Use err=True for warnings too
-            article_data['publicationDate'] = None # Or store the malformed string if preferred.
+    article_data['publicationDate'] = parse_publication_date(publication_date_str)
 
     # Ensure estimated_reading_time is an int or None, not 0 if not provided
     if estimated_reading_time is None:
@@ -155,6 +189,53 @@ def add_article(ctx, article_id, title, content_file, level_ids,
     except Exception as e:
         click.echo(f"Error processing article: {e}", err=True)
         ctx.exit(1) # Exit on error
+
+@cli.command()
+@click.argument('article_id')
+@click.pass_context
+def list_article_questions(ctx: click.Context, article_id: str) -> None:
+    """List all comprehension questions for a specific article.
+    
+    Args:
+        ctx: Click context containing Firestore client
+        article_id: Unique identifier of the article
+        
+    Returns:
+        None
+        
+    Raises:
+        SystemExit: If article not found or query fails
+    """
+    db = ctx.obj
+    validate_db_client(db, ctx)
+
+    try:
+        exists, article_doc = check_article_exists(db, article_id)
+        
+        if not exists:
+            click.echo(f"Article '{article_id}' not found.", err=True)
+            ctx.exit(1)
+        
+        click.echo(f"Article: {article_doc.get('title')}")
+        click.echo("-" * 40)
+        
+        article_ref = db.collection('articles').document(article_id)
+        questions = list(article_ref.collection('questions').stream())
+        
+        for i, q_doc in enumerate(questions, 1):
+            q = q_doc.to_dict()
+            click.echo(f"Q{i}: {q.get('questionTextEnglish')}")
+            
+            for choice in q.get('choices', []):
+                marker = " ✓" if choice['id'] == q.get('correctAnswer') else ""
+                click.echo(f"  {choice['id']}: {choice['text']}{marker}")
+            click.echo()
+        
+        click.echo(f"Total: {len(questions)} questions")
+            
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        ctx.exit(1)
 
 if __name__ == '__main__':
     cli()
