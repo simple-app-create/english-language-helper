@@ -1,21 +1,18 @@
 """CLI tool for managing English Language Helper data in Firestore."""
 
-from typing import Optional, Any
+from typing import Optional, Any, Literal
 
 import click
-from firebase_admin import firestore
-from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR, validate_db_client, parse_publication_date, check_article_exists
+from .firestore_utils import get_firestore_client, SERVICE_ACCOUNT_KEY_ENV_VAR, validate_db_client
 
-# SERVICE_ACCOUNT_KEY_ENV_VAR is now imported from firestore_utils
-# Global db client is now managed within get_firestore_client or passed via ctx.obj
 
 @click.group()
 @click.option(
     '--key-path',
-    envvar=SERVICE_ACCOUNT_KEY_ENV_VAR, # Now imported from firestore_utils
+    envvar=SERVICE_ACCOUNT_KEY_ENV_VAR,
     type=click.Path(exists=True, dir_okay=False, resolve_path=True),
     help=f'Path to the Firebase service account key JSON file. Can also be set via the {SERVICE_ACCOUNT_KEY_ENV_VAR} environment variable.',
-    required=False, # get_firestore_client will handle if it's truly missing (from path or env var)
+    required=False,
 )
 @click.pass_context
 def cli(ctx: click.Context, key_path: Optional[str]) -> None:
@@ -31,16 +28,121 @@ def cli(ctx: click.Context, key_path: Optional[str]) -> None:
     Raises:
         SystemExit: If Firestore initialization fails
     """
-    # Firebase initialization is now handled by get_firestore_client
     firestore_client = get_firestore_client(key_path=key_path) 
     
     if firestore_client is None:
-        # get_firestore_client already prints detailed errors
         click.echo("Failed to initialize Firestore. Exiting.", err=True)
         ctx.exit(1)
         
-    ctx.obj = firestore_client # Store the client in the context object for subcommands
-    # click.echo("Firebase Admin SDK initialized successfully via utils and client stored in context.", err=True) # Optional debug
+    ctx.obj = firestore_client
+
+
+# Core business logic functions (DRY principle)
+
+def _check_connection_core(db: Any) -> bool:
+    """Core logic for checking database connection.
+    
+    Args:
+        db: Firestore database client
+        
+    Returns:
+        True if connection successful, False otherwise
+    """
+    try:
+        articles_ref = db.collection('articles')
+        docs = articles_ref.limit(1).stream()
+        list(docs)
+        return True
+    except Exception:
+        return False
+
+
+
+def _list_articles_core(db: Any) -> list[tuple[str, dict[str, Any]]]:
+    """Core logic for listing all articles.
+    
+    Args:
+        db: Firestore database client
+        
+    Returns:
+        List of tuples containing (article_id, article_data)
+        
+    Raises:
+        Exception: If query fails
+    """
+    articles_ref = db.collection('articles')
+    return [(doc.id, doc.to_dict()) for doc in articles_ref.stream()]
+
+
+def _display_article_info(
+    article_id: str, 
+    article_data: dict[str, Any], 
+    mode: Literal['cli_list_item', 'interactive_list_item', 'interactive_detail_view'],
+    index: Optional[int] = None
+) -> None:
+    """Helper function to display article information in various formats.
+
+    Args:
+        article_id: The ID of the article.
+        article_data: The data dictionary of the article.
+        mode: The display mode.
+            'cli_list_item': For the `list-articles` CLI command.
+            'interactive_list_item': For the listing in interactive mode.
+            'interactive_detail_view': For the detailed view in interactive mode.
+        index: Optional index for list items.
+    """
+    if mode == 'cli_list_item':
+        if index is None:
+            raise ValueError("Index is required for 'cli_list_item' mode.")
+        click.echo(f"{index}. ID: {article_id}")
+        click.echo(f"   Title: {article_data.get('title', 'N/A')}")
+        click.echo(f"   Author: {article_data.get('author', 'N/A')}")
+        click.echo(f"   Level IDs: {', '.join(article_data.get('levelIds', []))}")
+        click.echo(f"   Has Questions: {'Yes' if article_data.get('hasComprehensionQuestions', False) else 'No'}")
+        click.echo(f"   Reading Time: {article_data.get('estimatedReadingTimeMinutes', 'N/A')} minutes")
+        click.echo("-" * 40)
+    
+    elif mode == 'interactive_list_item':
+        if index is None:
+            raise ValueError("Index is required for 'interactive_list_item' mode.")
+        click.echo(f"{index}. {article_data.get('title', 'N/A')}")
+        click.echo(f"   ID: {article_id}")
+        click.echo(f"   Author: {article_data.get('author', 'N/A')}")
+        click.echo(f"   Level: {', '.join(article_data.get('levelIds', []))}")
+        click.echo(f"   Questions: {'Yes' if article_data.get('hasComprehensionQuestions', False) else 'No'}")
+        click.echo()
+
+    elif mode == 'interactive_detail_view':
+        click.echo(f"📄 Title: {article_data.get('title', 'N/A')}")
+        click.echo(f"🆔 ID: {article_id}")
+        click.echo(f"👤 Author: {article_data.get('author', 'N/A')}")
+        click.echo(f"🏷️  Level IDs: {', '.join(article_data.get('levelIds', []))}")
+        click.echo(f"🏷️  Tags: {', '.join(article_data.get('tags', []))}")
+        click.echo(f"🌐 Source: {article_data.get('sourceName', 'N/A')}")
+        click.echo(f"🔗 URL: {article_data.get('sourceUrl', 'N/A')}")
+        click.echo(f"📅 Publication Date: {article_data.get('publicationDate', 'N/A')}")
+        click.echo(f"⏱️  Reading Time: {article_data.get('estimatedReadingTimeMinutes', 'N/A')} minutes")
+        click.echo(f"❓ Has Questions: {'Yes' if article_data.get('hasComprehensionQuestions', False) else 'No'}")
+        
+        if article_data.get('summaryEnglish'):
+            click.echo(f"\n📝 English Summary:")
+            click.echo(f"   {article_data.get('summaryEnglish')}")
+        
+        if article_data.get('summaryTraditionalChinese'):
+            click.echo(f"\n📝 Traditional Chinese Summary:")
+            click.echo(f"   {article_data.get('summaryTraditionalChinese')}")
+        
+        content = article_data.get('content', '')
+        if content:
+            click.echo(f"\n📖 Content Preview:")
+            click.echo("-" * 50)
+            preview = content[:500]
+            if len(content) > 500:
+                preview += "..."
+            click.echo(preview)
+
+
+# CLI Commands (thin wrappers around core functions)
 
 @cli.command()
 @click.pass_context
@@ -56,304 +158,55 @@ def check_db_connection(ctx: click.Context) -> None:
     Raises:
         SystemExit: If database connection test fails
     """
-    db = ctx.obj # Get client from context
+    db = ctx.obj
     validate_db_client(db, ctx)
     
-    try:
-        articles_ref = db.collection('articles') # Assuming 'articles' is a valid collection
-        # Use stream() for iterators and list() to consume and actually perform the read.
-        docs = articles_ref.limit(1).stream() 
-        list(docs) 
+    if _check_connection_core(db):
         click.echo("Successfully connected to Firestore and can perform reads.")
-    except Exception as e:
-        click.echo(f"Connected to Firestore, but encountered an error performing a test read: {e}", err=True)
-        click.echo("Please ensure your service account has the necessary permissions (e.g., 'roles/datastore.user').", err=True)
-
-@cli.command()
-@click.argument('article_id')
-@click.argument('title')
-@click.option(
-    '--content-file',
-    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
-    help='Path to a file containing the article content. If not provided, content will be empty.'
-)
-@click.option(
-    '--level-ids',
-    required=True,
-    type=str,
-    help='Comma-separated string of level IDs (e.g., "gsat_english,cap_junior_high").'
-)
-@click.option('--source-url', type=str, default="", help='The original URL of the article.')
-@click.option('--source-name', type=str, default="", help='The name of the website or publication.')
-@click.option(
-    '--publication-date-str', # Renamed to avoid confusion with datetime object if parsed
-    type=str,
-    help='Original publication date of the article as a string (e.g., "YYYY-MM-DD").'
-)
-@click.option('--author', type=str, default="", help='Author of the article.')
-@click.option(
-    '--tags',
-    type=str,
-    help='Comma-separated tags for the article (e.g., history,science).'
-)
-@click.option('--summary-english', type=str, default="", help='A brief English summary.')
-@click.option('--summary-traditional-chinese', type=str, default="", help='A brief Traditional Chinese summary.')
-@click.option('--estimated-reading-time', type=int, help='Estimated reading time in minutes.')
-@click.option(
-    '--has-comprehension-questions',
-    is_flag=True, # Makes it a boolean flag
-    default=False,
-    help='Set this flag if the article has comprehension questions.'
-)
-@click.pass_context
-def add_article(ctx: click.Context, article_id: str, title: str, 
-                content_file: Optional[str], level_ids: str,
-                source_url: str, source_name: str, publication_date_str: Optional[str], 
-                author: str, tags: Optional[str], summary_english: str, 
-                summary_traditional_chinese: str, estimated_reading_time: Optional[int],
-                has_comprehension_questions: bool) -> None:
-    """Add or update a reading article in the 'articles' collection.
-    
-    Args:
-        ctx: Click context containing Firestore client
-        article_id: Unique identifier for the article
-        title: Article title
-        content_file: Path to file containing article content
-        level_ids: Comma-separated string of level IDs
-        source_url: Original URL of the article
-        source_name: Name of the website or publication
-        publication_date_str: Publication date as YYYY-MM-DD string
-        author: Article author
-        tags: Comma-separated tags for the article
-        summary_english: Brief English summary
-        summary_traditional_chinese: Brief Traditional Chinese summary
-        estimated_reading_time: Estimated reading time in minutes
-        has_comprehension_questions: Whether article has comprehension questions
-        
-    Returns:
-        None
-        
-    Raises:
-        SystemExit: If article creation fails
-    """
-    db = ctx.obj # Get client from context
-    validate_db_client(db, ctx)
-
-    # Initialize article_data with all fields from the schema
-    article_data = {
-        'title': title,
-        'sourceUrl': source_url,
-        'sourceName': source_name,
-        'content': "", # Default, updated if content_file is provided
-        'scrapedAt': firestore.SERVER_TIMESTAMP,  # type: ignore # Assuming CLI adds "scraped" content
-        'publicationDate': None, # Default, updated if publication_date_str is valid
-        'levelIds': [level_id.strip() for level_id in level_ids.split(',') if level_id.strip()],
-        'author': author,
-        'tags': [tag.strip() for tag in tags.split(',') if tag.strip()] if tags else [],
-        'summaryEnglish': summary_english,
-        'summaryTraditionalChinese': summary_traditional_chinese,
-        'estimatedReadingTimeMinutes': estimated_reading_time, # click handles type or default None
-        'hasComprehensionQuestions': has_comprehension_questions,
-        'createdAt': firestore.SERVER_TIMESTAMP,  # type: ignore
-        'updatedAt': firestore.SERVER_TIMESTAMP  # type: ignore
-    }
-
-    if content_file:
-        try:
-            with open(content_file, 'r', encoding='utf-8') as f:
-                article_data['content'] = f.read()
-        except Exception as e:
-            click.echo(f"Error reading content file: {e}", err=True)
-            ctx.exit(1) # Exit if content file can't be read
-    
-    article_data['publicationDate'] = parse_publication_date(publication_date_str) if publication_date_str else None
-
-    # Ensure estimated_reading_time is an int or None, not 0 if not provided
-    if estimated_reading_time is None:
-        article_data['estimatedReadingTimeMinutes'] = None # Or a default like 0 if you prefer
     else:
-        article_data['estimatedReadingTimeMinutes'] = estimated_reading_time
+        click.echo("Connected to Firestore, but encountered an error performing a test read.", err=True)
+        click.echo("Please ensure your service account has the necessary permissions.", err=True)
 
-
-    try:
-        doc_ref = db.collection('articles').document(article_id)
-        # Using .set() will create the document if it doesn't exist, or overwrite it if it does.
-        doc_ref.set(article_data)
-        click.echo(f"Article '{title}' (ID: '{article_id}') added/updated successfully.")
-        click.echo("Data written:")
-        for key, value in article_data.items():
-            if value == firestore.SERVER_TIMESTAMP:  # type: ignore
-                click.echo(f"  {key}: Server Timestamp (will be set by Firestore)")
-            else:
-                click.echo(f"  {key}: {value}")
-    except Exception as e:
-        click.echo(f"Error processing article: {e}", err=True)
-        ctx.exit(1) # Exit on error
 
 @cli.command()
-@click.argument('article_id')
 @click.pass_context
-def list_article_questions(ctx: click.Context, article_id: str) -> None:
-    """List all comprehension questions for a specific article.
+def list_articles(ctx: click.Context) -> None:
+    """List all articles in the database with basic information.
     
     Args:
         ctx: Click context containing Firestore client
-        article_id: Unique identifier of the article
         
     Returns:
         None
         
     Raises:
-        SystemExit: If article not found or query fails
+        SystemExit: If query fails
     """
     db = ctx.obj
     validate_db_client(db, ctx)
 
     try:
-        exists, article_doc = check_article_exists(db, article_id)
+        articles = _list_articles_core(db)
         
-        if not exists:
-            click.echo(f"Article '{article_id}' not found.", err=True)
-            ctx.exit(1)
+        if not articles:
+            click.echo("No articles found in the database.")
+            return
         
-        click.echo(f"Article: {article_doc.get('title') if article_doc else 'Unknown'}")
-        click.echo("-" * 40)
+        click.echo(f"Found {len(articles)} articles:")
+        click.echo("=" * 80)
         
-        article_ref = db.collection('articles').document(article_id)
-        questions = list(article_ref.collection('questions').stream())
-        
-        for i, q_doc in enumerate(questions, 1):
-            q = q_doc.to_dict()
-            click.echo(f"Q{i}: {q.get('questionTextEnglish')}")
-            
-            for choice in q.get('choices', []):
-                marker = " ✓" if choice['id'] == q.get('correctAnswer') else ""
-                click.echo(f"  {choice['id']}: {choice['text']}{marker}")
-            click.echo()
-        
-        click.echo(f"Total: {len(questions)} questions")
+        for i, (article_id, article_data) in enumerate(articles, 1):
+            _display_article_info(article_id, article_data, mode='cli_list_item', index=i)
             
     except Exception as e:
-        click.echo(f"Error: {e}", err=True)
+        click.echo(f"Error listing articles: {e}", err=True)
         ctx.exit(1)
 
-def interactive_add_article(db: Any) -> None:
-    """Interactive mode for adding articles.
-    
-    Args:
-        db: Firestore database client
-        
-    Returns:
-        None
-    """
-    click.echo("\n=== Add Article ===")
-    
-    # Required fields
-    article_id = click.prompt("Article ID")
-    title = click.prompt("Title")
-    level_ids = click.prompt("Level IDs (comma-separated)")
-    
-    # Optional fields with defaults
-    content_file = click.prompt("Content file path (optional)", default="", show_default=False)
-    source_url = click.prompt("Source URL (optional)", default="", show_default=False)
-    source_name = click.prompt("Source name (optional)", default="", show_default=False)
-    author = click.prompt("Author (optional)", default="", show_default=False)
-    tags = click.prompt("Tags (comma-separated, optional)", default="", show_default=False)
-    summary_english = click.prompt("English summary (optional)", default="", show_default=False)
-    summary_traditional_chinese = click.prompt("Traditional Chinese summary (optional)", default="", show_default=False)
-    
-    publication_date_str = click.prompt("Publication date (YYYY-MM-DD, optional)", default="", show_default=False)
-    
-    estimated_reading_time = None
-    if click.confirm("Set estimated reading time?", default=False):
-        estimated_reading_time = click.prompt("Estimated reading time (minutes)", type=int)
-    
-    has_comprehension_questions = click.confirm("Has comprehension questions?", default=False)
-    
-    # Process the data similar to the command version
-    article_data = {
-        'title': title,
-        'sourceUrl': source_url,
-        'sourceName': source_name,
-        'content': "",
-        'scrapedAt': firestore.SERVER_TIMESTAMP,  # type: ignore
-        'publicationDate': None,
-        'levelIds': [level_id.strip() for level_id in level_ids.split(',') if level_id.strip()],
-        'author': author,
-        'tags': [tag.strip() for tag in tags.split(',') if tag.strip()] if tags else [],
-        'summaryEnglish': summary_english,
-        'summaryTraditionalChinese': summary_traditional_chinese,
-        'estimatedReadingTimeMinutes': estimated_reading_time,
-        'hasComprehensionQuestions': has_comprehension_questions,
-        'createdAt': firestore.SERVER_TIMESTAMP,  # type: ignore
-        'updatedAt': firestore.SERVER_TIMESTAMP  # type: ignore
-    }
-    
-    if content_file:
-        try:
-            with open(content_file, 'r', encoding='utf-8') as f:
-                article_data['content'] = f.read()
-                click.echo(f"✓ Content loaded from {content_file}")
-        except Exception as e:
-            click.echo(f"Error reading content file: {e}", err=True)
-            return
-    
-    article_data['publicationDate'] = parse_publication_date(publication_date_str) if publication_date_str else None
-    
-    try:
-        doc_ref = db.collection('articles').document(article_id)
-        doc_ref.set(article_data)
-        click.echo(f"\n✓ Article '{title}' (ID: '{article_id}') added successfully!")
-    except Exception as e:
-        click.echo(f"Error adding article: {e}", err=True)
+
+# Interactive mode functions (use core functions)
 
 
-def interactive_list_questions(db: Any) -> None:
-    """Interactive mode for listing article questions.
-    
-    Args:
-        db: Firestore database client
-        
-    Returns:
-        None
-    """
-    click.echo("\n=== List Article Questions ===")
-    
-    article_id = click.prompt("Article ID")
-    
-    try:
-        exists, article_doc = check_article_exists(db, article_id)
-        
-        if not exists or not article_doc:
-            click.echo(f"Article '{article_id}' not found.", err=True)
-            return
-        
-        click.echo(f"\nArticle: {article_doc.get('title')}")
-        click.echo("-" * 50)
-        
-        article_ref = db.collection('articles').document(article_id)
-        questions = list(article_ref.collection('questions').stream())
-        
-        if not questions:
-            click.echo("No questions found for this article.")
-            return
-        
-        for i, q_doc in enumerate(questions, 1):
-            q = q_doc.to_dict()
-            click.echo(f"Q{i}: {q.get('questionTextEnglish')}")
-            
-            for choice in q.get('choices', []):
-                marker = " ✓" if choice['id'] == q.get('correctAnswer') else ""
-                click.echo(f"  {choice['id']}: {choice['text']}{marker}")
-            click.echo()
-        
-        click.echo(f"Total: {len(questions)} questions")
-            
-    except Exception as e:
-        click.echo(f"Error: {e}", err=True)
-
-
-def interactive_check_connection(db: Any) -> None:
+def _interactive_check_connection(db: Any) -> None:
     """Interactive mode for checking database connection.
     
     Args:
@@ -364,15 +217,61 @@ def interactive_check_connection(db: Any) -> None:
     """
     click.echo("\n=== Database Connection Test ===")
     
-    try:
-        articles_ref = db.collection('articles')
-        docs = articles_ref.limit(1).stream()
-        docs_list = list(docs)
+    if _check_connection_core(db):
         click.echo("✓ Successfully connected to Firestore!")
         click.echo("✓ Database permissions are working correctly.")
-    except Exception as e:
-        click.echo(f"✗ Connection test failed: {e}", err=True)
+    else:
+        click.echo("✗ Connection test failed", err=True)
         click.echo("Please check your service account permissions.", err=True)
+
+
+def _interactive_list_and_view_articles(db: Any) -> None:
+    """Interactive mode for listing and viewing articles with questions.
+    
+    Args:
+        db: Firestore database client
+        
+    Returns:
+        None
+    """
+    click.echo("\n=== View Articles ===")
+    
+    try:
+        articles = _list_articles_core(db)
+        
+        if not articles:
+            click.echo("No articles found in the database.")
+            return
+        
+        click.echo(f"\nFound {len(articles)} articles:")
+        click.echo("=" * 80)
+        
+        for i, (article_id, article_data) in enumerate(articles, 1):
+            _display_article_info(article_id, article_data, mode='interactive_list_item', index=i)
+        
+        try:
+            selection = click.prompt(
+                f"Select an article to view (1-{len(articles)}) or 0 to go back", 
+                type=click.IntRange(0, len(articles))
+            )
+        except click.Abort:
+            return
+        
+        if selection == 0:
+            return
+        
+        selected_id, selected_data = articles[selection - 1]
+        
+        click.echo("\n" + "=" * 80)
+        click.echo("ARTICLE DETAILS")
+        click.echo("=" * 80)
+        
+        _display_article_info(selected_id, selected_data, mode='interactive_detail_view')
+
+        click.echo("\n" + "=" * 80)
+        
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
 
 
 @cli.command()
@@ -397,31 +296,27 @@ def interactive(ctx: click.Context) -> None:
     
     while True:
         click.echo("\nAvailable Operations:")
-        click.echo("1. Add Article")
-        click.echo("2. List Article Questions")
-        click.echo("3. Check Database Connection")
-        click.echo("4. Exit")
+        click.echo("1. View Articles & Questions")
+        click.echo("2. Check Database Connection")
+        click.echo("3. Exit")
         
         try:
-            choice = click.prompt("\nSelect an option", type=click.IntRange(1, 4))
+            choice = click.prompt("\nSelect an option", type=click.IntRange(1, 3))
         except click.Abort:
             click.echo("\nGoodbye!")
             break
         
         if choice == 1:
-            interactive_add_article(db)
+            _interactive_list_and_view_articles(db)
         elif choice == 2:
-            interactive_list_questions(db)
+            _interactive_check_connection(db)
         elif choice == 3:
-            interactive_check_connection(db)
-        elif choice == 4:
             click.echo("Goodbye!")
             break
         
-        if choice != 4:
+        if choice != 3:
             click.echo("\nPress Enter to continue...")
             click.getchar()
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     cli()
