@@ -11,6 +11,7 @@ Write **concise but pythonic** code that is:
 - Reuse functions through importing from other modules if possible
 - Follow the DRY (Don't Repeat Yourself) principle
 - Group and Separate functions in modules in logical manner
+- Separate User Interaction part away from Business Logic part
 
 ## Python Style Preferences
 
