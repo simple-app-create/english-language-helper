@@ -120,11 +120,11 @@ def main():
     menu_options = {
         '1': ("Fill in the Blank (句子填空)", lambda: handle_fill_in_the_blank_generation(db, LLM_API_KEY, LLM_SERVICE_NAME)),
         '2': ("Spelling Correction (拼字訂正)", lambda: handle_spelling_correction_generation(db, LLM_API_KEY, LLM_SERVICE_NAME)),
-        \'3\': ("Reading Comprehension (閱讀測驗)", lambda: handle_reading_comprehension_generation(db, LLM_API_KEY, LLM_SERVICE_NAME)),
-        \'4\': ("Sentence Translation (句子翻譯)", lambda: handle_sentence_translation_generation(db, LLM_API_KEY, LLM_SERVICE_NAME)),
-        \'5\': ("Picture Description (看圖辨義)", lambda: handle_picture_description_generation(db, LLM_API_KEY, LLM_SERVICE_NAME)),
-        \'6\': ("Listening Comprehension (聽力測驗)", lambda: handle_listening_comprehension_generation(db, LLM_API_KEY, LLM_SERVICE_NAME)),
-        \'7\': ("Exit", None) # Special case for exiting
+        '3': ("Reading Comprehension (閱讀測驗)", lambda: handle_reading_comprehension_generation(db, LLM_API_KEY, LLM_SERVICE_NAME)),
+        '4': ("Sentence Translation (句子翻譯)", lambda: handle_sentence_translation_generation(db, LLM_API_KEY, LLM_SERVICE_NAME)),
+        '5': ("Picture Description (看圖辨義)", lambda: handle_picture_description_generation(db, LLM_API_KEY, LLM_SERVICE_NAME)),
+        '6': ("Listening Comprehension (聽力測驗)", lambda: handle_listening_comprehension_generation(db, LLM_API_KEY, LLM_SERVICE_NAME)),
+        '7': ("Exit", None) # Special case for exiting
     }
 
     while True:
