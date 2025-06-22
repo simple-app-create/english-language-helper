@@ -18,7 +18,7 @@ from schemas import SpellingCorrectionQuestion, DifficultyDetail, LocalizedStrin
 
 # Import functions from local modules
 from .firestore_utils import get_firestore_client, add_document_to_collection
-from .exam_logic.exam_generation_utils import _prompt_localized_string, _prompt_difficulty_detail, _call_openai_api, _call_gemini_api
+from .exam_logic.exam_generation_utils import _prompt_difficulty_detail, _call_openai_api, _call_gemini_api
 from .exam_logic.spelling_correction_generator import handle_spelling_correction_generation
 from .exam_logic.fill_in_the_blank_generator import handle_fill_in_the_blank_generation
 from .exam_logic.reading_comprehension_generator import handle_reading_comprehension_generation
