@@ -11,9 +11,10 @@ import json # For handling JSON data
 from pydantic import ValidationError
 
 # Import schemas from the project root
-from schemas import LocalizedString, DifficultyDetail
+from ..schemas import LocalizedString, DifficultyDetail
 
 
+# This function might become less used or adapted if most localized strings are auto-generated/translated.
 def _prompt_localized_string(prompt_message: str) -> LocalizedString:
     """
     Prompts the user for English and Chinese (Taiwan) versions of a string.
@@ -29,13 +30,18 @@ def _prompt_localized_string(prompt_message: str) -> LocalizedString:
     return LocalizedString(en=en_text, zh_tw=zh_tw_text)
 
 
-def _prompt_difficulty_detail() -> Optional[DifficultyDetail]:
+def _prompt_difficulty_detail(llm_api_key: Optional[str], llm_service_name: Optional[str]) -> Optional[DifficultyDetail]:
     """
-    Prompts the user for the details of a question's difficulty.
+    Prompts the user for stage, grade, level, and auto-generates the difficulty name.
+    The English name is generated, and Chinese name is placeholder for now.
+
+    Args:
+        llm_api_key: The API key for the LLM service (for future translation).
+        llm_service_name: The name of the LLM service (for future translation).
 
     Returns:
         Optional[DifficultyDetail]: A Pydantic model containing the difficulty details,
-                                     or None if input is invalid or user cancels.
+                                     or None if input is invalid.
     """
     click.echo("\n--- Enter Difficulty Details ---")
     stage = click.prompt(
@@ -58,18 +64,39 @@ def _prompt_difficulty_detail() -> Optional[DifficultyDetail]:
         show_default=True
     )
 
-    # Prompt for difficulty name, allowing empty strings if user presses Enter
-    # _prompt_localized_string already handles default="" for its prompts
-    name_loc_str = _prompt_localized_string("Difficulty Name (e.g., 'Junior High - Grade 1') (Optional)")
+    # Auto-generate English name
+    # Sanitize stage for better display (e.g., "JUNIOR_HIGH" -> "Junior High")
+    formatted_stage = stage.replace("_", " ").title()
+    en_name = f"{formatted_stage} - Grade {grade}"
+    
+    # Placeholder for Chinese name - to be replaced with LLM translation
+    # For now, we can use the English name or a generic placeholder.
+    # We'll need to call the new _translate_text_to_zh_tw here later.
+    zh_tw_name = "" # Initialize
+    if llm_api_key and llm_service_name:
+        click.echo(f"Attempting to translate '{en_name}' to Traditional Chinese using {llm_service_name}...")
+        translated_name = _translate_text_to_zh_tw(en_name, llm_api_key, llm_service_name)
+        if translated_name:
+            zh_tw_name = translated_name
+            click.echo(f"Successfully translated to: {zh_tw_name}")
+        else:
+            click.echo(f"LLM translation failed for '{en_name}'. Using English name as placeholder for Chinese.", err=True)
+            zh_tw_name = en_name # Fallback to English name
+    else:
+        click.echo("LLM API key/service not available for translation. Using English name as placeholder for Chinese.", err=True)
+        zh_tw_name = en_name # Fallback to English name
+    
+    click.echo(f"Auto-generated Difficulty Name (English): {en_name}")
+    click.echo(f"Difficulty Name (Traditional Chinese): {zh_tw_name}")
+
+    name_loc_str = LocalizedString(en=en_name, zh_tw=zh_tw_name)
 
     try:
         difficulty = DifficultyDetail(
             stage=stage,
             grade=grade,
             level=level,
-            # If name is truly optional, the schema for DifficultyDetail.name might need Optional[LocalizedString]
-            # For now, we pass it as is. LocalizedString schema allows empty en/zh_tw.
-            name=name_loc_str 
+            name=name_loc_str
         )
         return difficulty
     except ValidationError as e:
@@ -177,3 +204,59 @@ def _call_gemini_api(api_key: str, prompt_text: str, model: str = "gemini-pro") 
     #     return None
     click.echo("Simulating Gemini API call. (Actual call is commented out in code).")
     return None # Placeholder: No actual call made in this environment
+
+
+def _translate_text_to_zh_tw(text_to_translate: str, api_key: Optional[str], service_name: Optional[str]) -> Optional[str]:
+    """
+    Translates English text to Traditional Chinese (Taiwan) using an LLM.
+
+    Args:
+        text_to_translate: The English text to translate.
+        api_key: The API key for the LLM service.
+        service_name: The name of the LLM service ("OPENAI" or "GOOGLE").
+
+    Returns:
+        The translated text in Traditional Chinese (Taiwan), or None if translation fails.
+    """
+    if not api_key or not service_name:
+        click.echo("LLM API key or service name not provided for translation.", err=True)
+        return None
+    if not text_to_translate:
+        return "" # If input is empty, return empty rather than calling LLM
+
+    prompt = (
+        f"Translate the following English text to Traditional Chinese (Taiwan). "
+        f"Your response must be a single, minified JSON object with one key: 'translation'. "
+        f"For example: {{\"translation\": \"您的翻譯文本\"}}. "
+        f"Do not include any other text or markdown. Text to translate: \"{text_to_translate}\""
+    )
+
+    llm_response_str: Optional[str] = None
+    if service_name == "OPENAI":
+        # Using a model that's good with JSON and instructions
+        llm_response_str = _call_openai_api(api_key, prompt, model="gpt-3.5-turbo-1106")
+    elif service_name == "GOOGLE":
+        # Ensure Gemini model used is also good with strict JSON output
+        llm_response_str = _call_gemini_api(api_key, prompt, model="gemini-pro") 
+    else:
+        click.echo(f"Unsupported LLM service for translation: {service_name}", err=True)
+        return None
+
+    if not llm_response_str:
+        click.echo("LLM call for translation failed or returned no content.", err=True)
+        return None
+
+    try:
+        response_data = json.loads(llm_response_str)
+        translation = response_data.get("translation")
+        if isinstance(translation, str):
+            return translation
+        else:
+            click.echo(f"LLM translation response did not contain a valid 'translation' string. Response: {llm_response_str}", err=True)
+            return None
+    except json.JSONDecodeError as e:
+        click.echo(f"Error decoding JSON response from LLM during translation: {e}. Response: {llm_response_str}", err=True)
+        return None
+    except Exception as e:
+        click.echo(f"An unexpected error occurred processing translation response: {e}. Response: {llm_response_str}", err=True)
+        return None

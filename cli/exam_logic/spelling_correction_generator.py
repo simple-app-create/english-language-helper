@@ -25,7 +25,7 @@ from .exam_generation_utils import (
 from ..firestore_utils import add_document_to_collection
 
 
-def _prompt_llm_spelling_details() -> Optional[dict]:
+def _prompt_llm_spelling_details(llm_api_key: Optional[str], llm_service_name: Optional[str]) -> Optional[dict]:
     """
     Prompts the user for details to request an LLM-generated SpellingCorrectionQuestion.
 
@@ -40,23 +40,13 @@ def _prompt_llm_spelling_details() -> Optional[dict]:
     """
     click.echo("\n--- Configure LLM for Spelling Correction Question ---")
 
-    difficulty_details = _prompt_difficulty_detail()
+    difficulty_details = _prompt_difficulty_detail(llm_api_key, llm_service_name)
     if not difficulty_details:
         return None  # Error messages handled in _prompt_difficulty_detail
 
-    learning_objectives_default_str = "Spelling"
-    learning_objectives_str = click.prompt(
-        "Learning Objectives (comma-separated)",
-        default=learning_objectives_default_str,
-        show_default=True
-    ).strip()
-
-    if not learning_objectives_str:  # User might have cleared the default
-        learning_objectives = [learning_objectives_default_str] if learning_objectives_default_str else []
-    else:
-        learning_objectives = [obj.strip() for obj in learning_objectives_str.split(',') if obj.strip()]
-        if not learning_objectives:  # Handles case where input was just commas or spaces
-            learning_objectives = [learning_objectives_default_str] if learning_objectives_default_str else []
+    # Learning objectives for spelling correction are typically fixed.
+    learning_objectives = ["Spelling"]
+    click.echo(f"Learning Objectives set to: {', '.join(learning_objectives)}")
 
     answer_input_type_choice = click.prompt(
         "Answer Input Type",
@@ -88,7 +78,7 @@ def handle_spelling_correction_generation(db: Optional[Any], llm_api_key: Option
     """
     click.echo("\n--- Spelling Correction (拼字訂正) ---")
 
-    llm_request_params = _prompt_llm_spelling_details()
+    llm_request_params = _prompt_llm_spelling_details(llm_api_key, llm_service_name)
 
     if llm_request_params:
         click.echo("\n--- LLM Generation Requested for Spelling Correction Question ---")
