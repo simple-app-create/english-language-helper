@@ -222,9 +222,11 @@ def handle_spelling_correction_generation(
                     + "The other choices should be plausible misspellings of '{target_word}' or closely related distractor words."
                 )
             else:  # TEXT_INPUT
-                prompt_parts.append(
-                    f"  The incorrect spelling provided to the student should be a misspelling of '{target_word}'."
-                )
+                prompt_parts.extend([
+                    f"  Create a sentence that includes a common misspelling of the word '{target_word}'.",
+                    f"  The sentence should be suitable for a student at the specified difficulty level.",
+                    f"  The JSON output should include this sentence, the misspelled word within it, and the correct spelling of that word."
+                ])
         else:
             # get a random english letter to start with
             ran_letter = get_random_english_letter()
@@ -251,9 +253,10 @@ def handle_spelling_correction_generation(
         else:  # TEXT_INPUT
             prompt_parts.extend(
                 [
-                    "  - 'questionText': A string for the question prompt (e.g., 'Correct the spelling of the given word.').",
-                    "  - 'incorrectSpelling': The incorrectly spelled word to present to the student.",
-                    "  - 'acceptableAnswers': A list containing one or more strings with the correct spelling(s).",
+                    "  - 'questionText': A string for the question prompt (e.g., 'Identify and correct the misspelled word in the sentence below.').",
+                    "  - 'sentenceWithMisspelledWord': A complete sentence that contains exactly one misspelled word.",
+                    "  - 'misspelledWordInSentence': The specific word within the 'sentenceWithMisspelledWord' that is misspelled.",
+                    "  - 'correctWord': The correct spelling of the 'misspelledWordInSentence'.",
                     "  - 'explanation': An object with 'en' (string, English explanation) and 'zh_tw' (string, Chinese explanation for the correct answer).",
                 ]
             )
@@ -307,32 +310,57 @@ def handle_spelling_correction_generation(
             try:
                 llm_generated_data = json.loads(llm_output_str)
 
-                # Merge LLM generated data with initially provided data
+                # Prepare details for Pydantic model instantiation
+                # Base details common to all spelling correction questions
                 final_question_details = {
-                    "difficulty": DifficultyDetail(
-                        **difficulty_data
-                    ),  # Re-validate with Pydantic model
+                    "difficulty": DifficultyDetail(**difficulty_data), # Re-validate with Pydantic model
                     "learningObjectives": learning_objectives,
-                    "questionType": "SPELLING_CORRECTION",
-                    "answerInputType": target_answer_type,
+                    "questionType": "SPELLING_CORRECTION", # This is fixed for this generator
                     "questionText": llm_generated_data.get("questionText"),
-                    "explanation": LocalizedString(
-                        **llm_generated_data.get("explanation")
-                    )
-                    if llm_generated_data.get("explanation")
-                    else None,
-                    "choices": [
-                        ChoiceDetail(**c) for c in llm_generated_data.get("choices", [])
-                    ]
-                    if llm_generated_data.get("choices")
-                    else None,
-                    "incorrectSpelling": llm_generated_data.get("incorrectSpelling"),
-                    "acceptableAnswers": llm_generated_data.get("acceptableAnswers"),
+                    "explanation": LocalizedString(**llm_generated_data.get("explanation")) if llm_generated_data.get("explanation") else None,
                 }
 
-                generated_question = SpellingCorrectionQuestion(
-                    **final_question_details
-                )
+                # Add fields specific to the Pydantic SpellingCorrectionQuestion model structure,
+                # based on the LLM's output for the requested 'target_answer_type'.
+                if target_answer_type == "MULTIPLE_CHOICE":
+                    llm_choices_data = llm_generated_data.get("choices", [])
+                    if llm_choices_data:
+                        # Extract word strings for 'wordChoices'
+                        final_question_details["wordChoices"] = [
+                            choice.get("text") for choice in llm_choices_data if choice.get("text")
+                        ]
+                        # Find the correct word from the choices
+                        correct_text = next(
+                            (choice.get("text") for choice in llm_choices_data if choice.get("isCorrect") and choice.get("text")),
+                            None
+                        )
+                        if correct_text:
+                            final_question_details["correctWord"] = correct_text
+                        else:
+                            click.echo("Warning: LLM 'choices' for MULTIPLE_CHOICE did not provide a valid/correct choice text. Pydantic validation might fail.", err=True)
+                    else:
+                        click.echo("Warning: LLM 'choices' for MULTIPLE_CHOICE were empty or not provided. Pydantic validation might fail.", err=True)
+
+                elif target_answer_type == "TEXT_INPUT":
+                    # LLM is now prompted to provide these fields directly based on the updated prompt
+                    sentence_with_misspelled = llm_generated_data.get("sentenceWithMisspelledWord")
+                    misspelled_in_sentence = llm_generated_data.get("misspelledWordInSentence")
+                    correct_word_from_llm = llm_generated_data.get("correctWord")
+
+                    if sentence_with_misspelled and misspelled_in_sentence and correct_word_from_llm:
+                        final_question_details["sentenceWithMisspelledWord"] = sentence_with_misspelled
+                        final_question_details["misspelledWordInSentence"] = misspelled_in_sentence
+                        final_question_details["correctWord"] = correct_word_from_llm
+                    else:
+                        click.echo("Warning: LLM data for TEXT_INPUT was missing one or more of 'sentenceWithMisspelledWord', 'misspelledWordInSentence', or 'correctWord'. Pydantic validation might fail.", err=True)
+                        # Fallback or error: Pydantic validation will likely fail if these are missing
+                        # and no alternative (like wordChoices) is populated for the SpellingCorrectionQuestion model.
+                
+                # Fields not part of the SpellingCorrectionQuestion model (like raw 'choices' list of dicts,
+                # or 'answerInputType') are implicitly excluded because we are constructing 'final_question_details'
+                # selectively with only the fields that SpellingCorrectionQuestion expects.
+
+                generated_question = SpellingCorrectionQuestion(**final_question_details)
                 click.echo(
                     "\n--- Successfully Parsed and Validated LLM-Generated Question ---"
                 )
