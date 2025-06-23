@@ -1,7 +1,21 @@
 # exam_generator_cli.py
 
+import sys
+import os
+
+# Ensure the project root is in sys.path to allow for absolute imports
+# like 'from schemas import ...'
+# This gets the directory of the current file (cli/)
+_current_file_dir = os.path.dirname(os.path.abspath(__file__))
+# This gets the project root directory (english-language-helper/) by going up one level from cli/
+_project_root = os.path.dirname(_current_file_dir)
+
+# Add the project root to the Python path if it's not already there
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 # Import necessary modules
-import os # For API key management
+# 'os' was already imported for path manipulation, but good to keep track here
 from typing import List, Optional, Union # For type hinting
 import json # For handling JSON data
 import click # For CLI interactions
@@ -13,6 +27,7 @@ from dotenv import load_dotenv # To load .env file for local development
 from pydantic import ValidationError
 
 # Import Pydantic models from schemas.py (now at project root)
+# This should work now that project_root is in sys.path
 from schemas import SpellingCorrectionQuestion, DifficultyDetail, LocalizedString, ChoiceDetail
 
 
@@ -131,7 +146,7 @@ def main():
         click.echo("\n--- English Exam Question Generator ---")
         for key, (text, _) in menu_options.items():
             click.echo(f"{key}. {text}")
-        click.echo("---------------------------------------")
+        click.echo("---------------------------------------\n")
         
         choice = click.prompt("Enter your choice", type=click.Choice(list(menu_options.keys())), show_choices=False)
 
@@ -141,7 +156,13 @@ def main():
         
         text, func = menu_options[choice]
         if func:
-            func()
+            try:
+                func()
+            except Exception as e:
+                click.echo(click.style(f"An error occurred in '{text}': {e}", fg="red"), err=True)
+                # Optionally, print full traceback for debugging
+                # import traceback
+                # click.echo(traceback.format_exc(), err=True)
         else:
             # Should not happen with current menu_options if choice is not '7'
             click.echo(f"No function defined for '{text}'. This is unexpected.", err=True)

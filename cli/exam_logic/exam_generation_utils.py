@@ -45,16 +45,6 @@ DIFFICULTY_ZH_TW_NAME_MAP = {
 }
 
 
-def get_random_english_letter() -> str:
-    """
-    Returns a random lowercase English letter.
-
-    Returns:
-        str: A single random lowercase English letter.
-    """
-    return random.choice(string.ascii_lowercase)
-
-
 # This function might become less used or adapted if most localized strings are auto-generated/translated.
 def _prompt_difficulty_detail() -> Optional[DifficultyDetail]:
     """
@@ -241,16 +231,6 @@ def _call_gemini_api(
     except Exception as e:
         click.echo(f"An unexpected error occurred with Gemini API call: {e}", err=True)
         return None
-
-
-def get_random_english_letter() -> str:
-    """
-    Returns a random lowercase English letter.
-
-    Returns:
-        str: A single random lowercase English letter.
-    """
-    return random.choice(string.ascii_lowercase)
 
 
 def _generate_word_choices_for_difficulty(
