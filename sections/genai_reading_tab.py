@@ -63,23 +63,29 @@ def show_genai_tab(tab):  # Add tab argument
 
         # 3. Generate Button
         if st.button("Generate Passage and Questions"):
-            # Clear previous state before generating new content (already done if Generate button is inside expander logic)
-            # This logger call is also potentially duplicated if button logic is nested.
-            # sections_logger.info(f"Generate button clicked for topic: '{selected_topic}', difficulty: '{selected_difficulty}'.")
+            # Clear previous state before generating new content
             st.session_state.validated_reading_material = None
-            keys_to_delete = [
-            key for key in st.session_state
-            if key.startswith("q") and key.endswith("_answer_visible")
-        ]
-        
-            for key in keys_to_delete:
-                del st.session_state[key]
+            keys_to_delete_from_session = []
+            # Iterate over a copy of keys for safe deletion if modifying session_state directly
+            # or collect keys and delete after loop.
+            for key_in_session in list(st.session_state.keys()): 
+                if key_in_session.startswith("q"):
+                    if key_in_session.endswith("_answer_visible") or \
+                       key_in_session.endswith("_user_selected_idx") or \
+                       key_in_session.endswith("_radio_widget_internal_key"): # Key used by st.radio
+                        keys_to_delete_from_session.append(key_in_session)
+            
+            for key_to_del in keys_to_delete_from_session:
+                if key_to_del in st.session_state: # Ensure key exists before deleting
+                    del st.session_state[key_to_del]
 
             if not selected_topic:
                 tab.error(
                     "Please enter a topic or select the 'Choose a random topic for me' option."
                 )
-                sections_logger.warning("Generation attempted without a selected topic.")
+                sections_logger.warning(
+                    "Generation attempted without a selected topic."
+                )
             elif not selected_difficulty:
                 tab.error("Please select a difficulty level.")
                 sections_logger.warning(
@@ -93,7 +99,8 @@ def show_genai_tab(tab):  # Add tab argument
                         # Assuming generate_combined_passage_and_questions_prompt returns the prompt string
                         # And then we need to call the LLM with this prompt
                         prompt_text = generate_combined_passage_and_questions_prompt(
-                            topic=selected_topic, difficulty_description=selected_difficulty
+                            topic=selected_topic,
+                            difficulty_description=selected_difficulty,
                         )
 
                         if not prompt_text:
@@ -195,21 +202,60 @@ def show_genai_tab(tab):  # Add tab argument
                 # Display question text
                 tab.markdown(f"**Question {q_idx + 1}:** {question.questionText}")
 
-                if (
-                    question.choices
-                ):  # Assuming READING_COMPREHENSION type always has choices
-                    tab.markdown("**Choices:**")
-                    for choice_idx, choice in enumerate(question.choices):
-                        tab.markdown(f"- {chr(ord('A') + choice_idx)}. {choice.text}")
-
-                    tab.write("")  # Adds a little space before the button
-
+                if question.choices:
                     answer_visible_key = f"{question_key_prefix}_answer_visible"
+                    # Key to store the index of the user's selected choice
+                    user_selected_idx_key = f"{question_key_prefix}_user_selected_idx" 
 
-                    # Initialize session state for answer visibility if not already present
+                    # Initialize session states if not present
                     if answer_visible_key not in st.session_state:
                         st.session_state[answer_visible_key] = False
+                    if user_selected_idx_key not in st.session_state:
+                        st.session_state[user_selected_idx_key] = None # Will store the index (0, 1, 2...) of the choice
 
+                    if st.session_state[answer_visible_key]:
+                        # Display choices with feedback (✅, ❌, ◻️)
+                        tab.markdown("**Choices:**")
+                        user_choice_idx_val = st.session_state.get(user_selected_idx_key) # This is the index of user's choice e.g. 0, 1, ..
+                        
+                        for choice_idx, choice_item in enumerate(question.choices):
+                            prefix = "◻️"  # Default marker
+                            choice_label = chr(65 + choice_idx) # A, B, C...
+
+                            if choice_item.isCorrect:
+                                prefix = "✅"
+                            elif user_choice_idx_val == choice_idx: # User selected this choice, and it's not correct (covered by above)
+                                prefix = "❌"
+                            
+                            tab.markdown(f"{prefix} {choice_label}. {choice_item.text}")
+                    else:
+                        # Display radio buttons for answer selection
+                        tab.markdown("**Choices:**")
+                        
+                        choice_indices_options = list(range(len(question.choices))) # Options for radio [0, 1, 2...]
+
+                        def format_func_for_radio(idx_param):
+                            return f"{chr(65 + idx_param)}. {question.choices[idx_param].text}"
+
+                        current_selected_value = st.session_state.get(user_selected_idx_key)
+                        
+                        radio_preselection_index = None
+                        if current_selected_value is not None and current_selected_value in choice_indices_options:
+                            radio_preselection_index = current_selected_value # Since options are [0,1,2..], value is its own index in options
+
+                        # st.radio returns the selected option's value (which is an index in our case)
+                        # This value is stored in our session state key.
+                        st.session_state[user_selected_idx_key] = tab.radio(
+                            label="Select your answer:", # Label for the radio group, can be hidden with label_visibility
+                            options=choice_indices_options, 
+                            format_func=format_func_for_radio,
+                            index=radio_preselection_index, 
+                            key=f"{question_key_prefix}_radio_widget_internal_key" # Unique key for Streamlit's internal widget state
+                        )
+
+                    tab.write("")  # Adds a little space
+
+                    # Button to toggle answer visibility
                     button_text = (
                         "Hide Answer & Explanation"
                         if st.session_state[answer_visible_key]
@@ -223,21 +269,22 @@ def show_genai_tab(tab):  # Add tab argument
                         st.session_state[answer_visible_key] = not st.session_state[
                             answer_visible_key
                         ]
+                        # Re-run will occur, displaying either radio or feedback text.
 
-                    # Display correct answer and explanation if visible
+                    # Display correct answer text and explanation if visible
                     if st.session_state[answer_visible_key]:
-                        correct_answer_text = ""
-                        for choice in question.choices:
-                            if choice.isCorrect:
-                                correct_answer_text = choice.text
+                        correct_answer_text_display = ""
+                        correct_answer_label_display = ""
+                        for idx, choice_item_for_answer in enumerate(question.choices):
+                            if choice_item_for_answer.isCorrect:
+                                correct_answer_label_display = chr(65 + idx)
+                                correct_answer_text_display = choice_item_for_answer.text
                                 break
-
-                        if correct_answer_text:
-                            tab.success(f"**Correct Answer:** {correct_answer_text}")
+                        
+                        if correct_answer_text_display:
+                            tab.success(f"**Correct Answer:** {correct_answer_label_display}. {correct_answer_text_display}")
                         else:
-                            tab.warning(
-                                "Correct answer not found in choices."
-                            )  # Should not happen if data is valid
+                            tab.warning("Correct answer not found in choices.") 
 
                         if question.explanation:
                             explanation_display = (
