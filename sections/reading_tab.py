@@ -3,6 +3,7 @@
 from typing import Any, List, Optional
 
 import streamlit as st
+from google.cloud.firestore import FieldFilter
 from pydantic import ValidationError
 
 # Assuming schemas.py and logger_config.py are in the project root,
@@ -34,7 +35,7 @@ def get_passage_assets(_db: Any) -> List[PassageAsset]:
     try:
         passages_ref = (
             _db.collection(PASSAGE_ASSETS_COLLECTION)
-            .where("status", "==", "DRAFT")
+            .where(filter=FieldFilter("status", "==", "DRAFT"))
             .stream()
         )
         for doc in passages_ref:
@@ -45,14 +46,24 @@ def get_passage_assets(_db: Any) -> List[PassageAsset]:
                     passage_data["assetId"] = doc.id
                     passages_list.append(PassageAsset(**passage_data))
             except ValidationError as e:
-                sections_logger.warning(f"Data validation error for passage {doc.id}: {e}", exc_info=False) # Keep False if e already has good info
-                st.warning(f"Skipping a passage due to data format issue (ID: {doc.id}). See section.log for details.")
+                sections_logger.warning(
+                    f"Data validation error for passage {doc.id}: {e}", exc_info=False
+                )  # Keep False if e already has good info
+                st.warning(
+                    f"Skipping a passage due to data format issue (ID: {doc.id}). See section.log for details."
+                )
             except Exception as e:
-                sections_logger.error(f"Error parsing passage document {doc.id}: {e}", exc_info=True)
+                sections_logger.error(
+                    f"Error parsing passage document {doc.id}: {e}", exc_info=True
+                )
                 # Optionally, inform user that some data might be missing
     except Exception as e:
-        sections_logger.error(f"Error fetching passages from Firestore: {e}", exc_info=True)
-        st.error("Could not load reading passages. Please check section.log for details.")
+        sections_logger.error(
+            f"Error fetching passages from Firestore: {e}", exc_info=True
+        )
+        st.error(
+            "Could not load reading passages. Please check section.log for details."
+        )
         return []
     return passages_list
 
@@ -78,8 +89,8 @@ def get_questions_for_passage(
     try:
         questions_ref = (
             _db.collection(QUESTIONS_COLLECTION)
-            .where("contentAssetId", "==", passage_id)
-            .where("questionType", "==", "READING_COMPREHENSION")
+            .where(filter=FieldFilter("contentAssetId", "==", passage_id))
+            .where(filter=FieldFilter("questionType", "==", "READING_COMPREHENSION"))
             .stream()
         )
         for doc in questions_ref:
@@ -89,18 +100,25 @@ def get_questions_for_passage(
                     questions_list.append(ReadingComprehensionQuestion(**question_data))
             except ValidationError as e:
                 sections_logger.warning(
-                    f"Data validation error for question {doc.id} (passage {passage_id}): {e}", exc_info=False
+                    f"Data validation error for question {doc.id} (passage {passage_id}): {e}",
+                    exc_info=False,
                 )
-                st.warning(f"Skipping a question for passage {passage_id} due to data format issue (ID: {doc.id}). See section.log.")
+                st.warning(
+                    f"Skipping a question for passage {passage_id} due to data format issue (ID: {doc.id}). See section.log."
+                )
             except Exception as e:
                 sections_logger.error(
-                    f"Error parsing question document {doc.id} for passage {passage_id}: {e}", exc_info=True
+                    f"Error parsing question document {doc.id} for passage {passage_id}: {e}",
+                    exc_info=True,
                 )
     except Exception as e:
         sections_logger.error(
-            f"Error fetching questions for passage {passage_id} from Firestore: {e}", exc_info=True
+            f"Error fetching questions for passage {passage_id} from Firestore: {e}",
+            exc_info=True,
         )
-        st.error(f"Could not load questions for passage {passage_id}. Please check section.log.")
+        st.error(
+            f"Could not load questions for passage {passage_id}. Please check section.log."
+        )
         return []
     return questions_list
 
@@ -183,16 +201,11 @@ def show_reading_tab(tab: Any, db: Optional[Any]) -> None:
                 f"**Difficulty:** {difficulty.name.en} ({difficulty.name.zh_tw}) - Stage: {difficulty.stage}, Grade: {difficulty.grade}, Level: {difficulty.level}"
             )
 
-            if selected_passage.learningObjectives:
-                st.markdown(
-                    f"**Learning Objectives:** {', '.join(selected_passage.learningObjectives)}"
-                )
-
             st.markdown("---")  # Visual separator
 
             # Display passage content, allowing the container to auto-resize
             with st.container(border=False):  # Removed height parameter
-                st.markdown(selected_passage.content)
+                st.markdown(f"{selected_passage.content}")
 
             st.markdown("---")
             st.subheader("📝 Comprehension Questions")

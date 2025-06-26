@@ -3,6 +3,7 @@
 from typing import Any, List, Optional, Dict, Type
 
 import streamlit as st
+from google.cloud.firestore import FieldFilter
 from pydantic import ValidationError
 
 # Absolute imports, assuming main.py has added project root to sys.path
@@ -51,7 +52,7 @@ def fetch_and_parse_questions(
     questions_list: List[AnyQuestionType] = []
     try:
         query = db.collection(QUESTIONS_COLLECTION) \
-                  .where("questionType", "==", question_type_str) \
+                  .where(filter=FieldFilter("questionType", "==", question_type_str)) \
                   .limit(limit) 
         
         docs = query.stream()
