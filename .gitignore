@@ -42,3 +42,7 @@ logs/
 dist/
 build/
 *.egg-info/
+
+# python stuff
+.pyc
+.pyo
