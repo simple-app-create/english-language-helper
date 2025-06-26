@@ -25,7 +25,7 @@ import os
 import json
 import firebase_admin
 from firebase_admin import credentials, firestore
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # Re-added for local .env file support
 from logger_config import main_app_logger  # Import main_app_logger
 
 # --- Logging Setup ---
@@ -38,76 +38,67 @@ from logger_config import main_app_logger  # Import main_app_logger
 def get_firestore_client():
     """
     Initializes Firebase Admin SDK and returns a Firestore client.
-    Loads credentials from .env file or Streamlit secrets.
+    Loads credentials primarily from st.secrets (for FIREBASE_SERVICE_ACCOUNT_JSON).
+    As a fallback for local development, loads a path to the service account key
+    from an environment variable (FIREBASE_SERVICE_ACCOUNT_KEY_PATH) via a .env file.
     Returns None if initialization fails.
     """
-    load_dotenv()  # Load environment variables from .env file
+    load_dotenv()  # Load environment variables from .env file for local development
 
     try:
         # Check if Firebase app is already initialized
         if not firebase_admin._apps:
-            cred_object = None
-            # Option 1: Service account JSON content directly in env variable (e.g., for Streamlit Cloud secrets)
-            service_account_json_str = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
-            if service_account_json_str:
-                try:
-                    cred_object = json.loads(service_account_json_str)
-                    if cred_object:
-                        cred = credentials.Certificate(cred_object)
-                        main_app_logger.info(
-                            "Attempting to initialize Firebase with FIREBASE_SERVICE_ACCOUNT_JSON env var."
-                        )
-                    else:  # If json.loads returns None or empty dict
-                        main_app_logger.warning(
-                            "FIREBASE_SERVICE_ACCOUNT_JSON was found but was empty or invalid after parsing."
-                        )
-                except json.JSONDecodeError as e:
-                    main_app_logger.error(
-                        f"Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON: {e}",
-                        exc_info=True,
-                    )
-                    service_account_json_str = (
-                        None  # Ensure it falls through or is handled
-                    )
-                except (
-                    Exception
-                ) as e:  # Catch other potential errors with Certificate creation
-                    main_app_logger.error(
-                        f"Error creating credential from FIREBASE_SERVICE_ACCOUNT_JSON: {e}",
-                        exc_info=True,
-                    )
-                    service_account_json_str = None
+            cred = None  # Initialize cred to None
+            cred_object_from_json_string = None
 
-            # Option 2: Path to service account JSON file in env variable (common for local dev)
-            if not cred_object:  # If not loaded from direct JSON string
-                service_account_file_path = os.getenv(
-                    "FIREBASE_SERVICE_ACCOUNT_KEY_PATH"
-                )
-                if service_account_file_path:
-                    if os.path.exists(service_account_file_path):
-                        cred = credentials.Certificate(service_account_file_path)
-                        main_app_logger.info(
-                            f"Attempting to initialize Firebase with FIREBASE_SERVICE_ACCOUNT_KEY_PATH: {service_account_file_path}"
+            # Option 1: Service account JSON content directly in st.secrets (preferred for Streamlit Cloud)
+            if "FIREBASE_SERVICE_ACCOUNT_JSON" in st.secrets:
+                service_account_json_str = st.secrets["FIREBASE_SERVICE_ACCOUNT_JSON"]
+                if (
+                    isinstance(service_account_json_str, str)
+                    and service_account_json_str.strip()
+                ):
+                    try:
+                        parsed_json = json.loads(service_account_json_str)
+                        cred_object_from_json_string = credentials.Certificate(
+                            parsed_json
                         )
-                    else:
+                        main_app_logger.info(
+                            "Attempting to initialize Firebase with FIREBASE_SERVICE_ACCOUNT_JSON from st.secrets."
+                        )
+                        cred = cred_object_from_json_string
+                    except json.JSONDecodeError as e:
                         main_app_logger.error(
-                            f"FIREBASE_SERVICE_ACCOUNT_KEY_PATH path not found: {service_account_file_path}"
+                            f"Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON from st.secrets: {e}",
+                            exc_info=True,
                         )
-                        st.error(
-                            "Firebase configuration error (file path). See app.log for details."
+                    except (
+                        Exception
+                    ) as e:  # Catch other potential errors with Certificate creation
+                        main_app_logger.error(
+                            f"Error creating credential from FIREBASE_SERVICE_ACCOUNT_JSON (st.secrets): {e}",
+                            exc_info=True,
                         )
-                        return None
                 else:
-                    main_app_logger.error(
-                        "Firebase credentials (FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_KEY_PATH) not found in environment variables."
+                    main_app_logger.warning(
+                        "FIREBASE_SERVICE_ACCOUNT_JSON found in st.secrets but is empty or not a string."
                     )
-                    st.error(
-                        "Firebase configuration error (credentials not set). See app.log for details."
-                    )
-                    return None
 
-            firebase_admin.initialize_app(cred)
-            main_app_logger.info("Firebase Admin SDK initialized successfully!")
+            if not cred:
+                main_app_logger.error(
+                    "Firebase credentials not successfully loaded. "
+                    "Checked for FIREBASE_SERVICE_ACCOUNT_JSON in Streamlit secrets and "
+                    "FIREBASE_SERVICE_ACCOUNT_KEY_PATH in environment variables (e.g., .env file)."
+                )
+                st.error(
+                    "Firebase configuration error: Credentials not found or invalid. Please check: \n"
+                    "1. Streamlit secrets for 'FIREBASE_SERVICE_ACCOUNT_JSON' (for deployed apps or local .streamlit/secrets.toml).\n"
+                    "2. Your .env file for 'FIREBASE_SERVICE_ACCOUNT_KEY_PATH' (for local development)."
+                )
+                return None
+
+        firebase_admin.initialize_app(cred)
+        main_app_logger.info("Firebase Admin SDK initialized successfully!")
 
         db = firestore.client()
         return db

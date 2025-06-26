@@ -1,22 +1,34 @@
 import random
 import json
 import os
-from dotenv import load_dotenv
+import streamlit as st  # Added Streamlit
 import google.generativeai as genai
 
-# Load environment variables from .env file
-load_dotenv()
-
-# Configure Google Generative AI
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+# Configure Google Generative AI using Streamlit Secrets
+GOOGLE_API_KEY = None
 GEMINI_MODEL_CONFIGURED = False
+
+try:
+    # Attempt to get the API key from Streamlit secrets
+    # The key in secrets.toml should be GEMINI_API_KEY
+    GOOGLE_API_KEY = st.secrets.get("GEMINI_API_KEY") 
+except Exception as e:
+    # This might happen if st.secrets is not available in the environment (e.g. running script outside Streamlit)
+    # Or if there's an issue accessing secrets.
+    print(f"Warning: Could not access Streamlit secrets. Attempting fallback to OS environment variables if configured: {e}")
+    # As a fallback, you could try os.getenv here if you want a layered approach,
+    # but the primary method should be st.secrets.
+    # For now, we'll assume st.secrets is the main source.
+    pass
+
+
 if not GOOGLE_API_KEY:
     print(
-        "Warning: GOOGLE_API_KEY not found in environment variables. LLM calls will be skipped."
+        "Warning: GEMINI_API_KEY not found in Streamlit secrets (e.g., .streamlit/secrets.toml or Streamlit Cloud configuration). LLM calls will be skipped."
     )
-    print(
-        'Ensure you have a .env file in the same directory as this script with GOOGLE_API_KEY="your_key_here"'
-    )
+    # Optionally, you could fall back to os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") here
+    # if you want to support .env files as a secondary local mechanism.
+    # e.g., if not GOOGLE_API_KEY: GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY") (after load_dotenv())
 else:
     try:
         genai.configure(api_key=GOOGLE_API_KEY)
