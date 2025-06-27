@@ -30,6 +30,7 @@ Thumbs.db
 .env
 .env.local
 .streamlit/secrets.toml
+/streamlit/convert2toml.py
 /streamlit
 
 # Firebase keys (security)

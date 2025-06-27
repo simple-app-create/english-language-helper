@@ -54,35 +54,38 @@ def get_firestore_client():
             # Option 1: Service account JSON content directly in st.secrets (preferred for Streamlit Cloud)
             if "FIREBASE_SERVICE_ACCOUNT_JSON" in st.secrets:
                 service_account_json_str = st.secrets["FIREBASE_SERVICE_ACCOUNT_JSON"]
-                if (
-                    isinstance(service_account_json_str, str)
-                    and service_account_json_str.strip()
-                ):
-                    try:
-                        parsed_json = json.loads(service_account_json_str)
-                        cred_object_from_json_string = credentials.Certificate(
-                            parsed_json
-                        )
-                        main_app_logger.info(
-                            "Attempting to initialize Firebase with FIREBASE_SERVICE_ACCOUNT_JSON from st.secrets."
-                        )
-                        cred = cred_object_from_json_string
-                    except json.JSONDecodeError as e:
-                        main_app_logger.error(
-                            f"Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON from st.secrets: {e}",
-                            exc_info=True,
-                        )
-                    except (
-                        Exception
-                    ) as e:  # Catch other potential errors with Certificate creation
-                        main_app_logger.error(
-                            f"Error creating credential from FIREBASE_SERVICE_ACCOUNT_JSON (st.secrets): {e}",
-                            exc_info=True,
-                        )
-                else:
-                    main_app_logger.warning(
-                        "FIREBASE_SERVICE_ACCOUNT_JSON found in st.secrets but is empty or not a string."
+            else:
+                service_account_json_str = os.environ.get(
+                    "FIREBASE_SERVICE_ACCOUNT_JSON"
+                )
+
+            if (
+                isinstance(service_account_json_str, str)
+                and service_account_json_str.strip()
+            ):
+                try:
+                    parsed_json = json.loads(service_account_json_str)
+                    cred_object_from_json_string = credentials.Certificate(parsed_json)
+                    main_app_logger.info(
+                        "Attempting to initialize Firebase with FIREBASE_SERVICE_ACCOUNT_JSON from st.secrets."
                     )
+                    cred = cred_object_from_json_string
+                except json.JSONDecodeError as e:
+                    main_app_logger.error(
+                        f"Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON from st.secrets: {e}",
+                        exc_info=True,
+                    )
+                except (
+                    Exception
+                ) as e:  # Catch other potential errors with Certificate creation
+                    main_app_logger.error(
+                        f"Error creating credential from FIREBASE_SERVICE_ACCOUNT_JSON (st.secrets): {e}",
+                        exc_info=True,
+                    )
+            else:
+                main_app_logger.warning(
+                    "FIREBASE_SERVICE_ACCOUNT_JSON found in st.secrets but is empty or not a string."
+                )
 
             if not cred:
                 main_app_logger.error(
